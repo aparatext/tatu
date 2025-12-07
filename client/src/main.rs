@@ -36,7 +36,7 @@ async fn main() -> anyhow::Result<()> {
     IDENTITY_KEY.set(identity_key).ok();
 
     HANDLES_DIR.set(
-        std::env::var("TATU_HANDLE_CACHE")
+        std::env::var("TATU_HANDLES")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("tatu-handles"))
     ).unwrap();
@@ -149,8 +149,10 @@ async fn read_minecraft_login(
         }
     };
 
-    let username = hello.name.clone();
-    Ok((conn.into_split_raw(), username))
+    let mut nick = hello.name.clone();
+    nick.truncate(7);
+
+    Ok((conn.into_split_raw(), nick))
 }
 
 async fn forward_messages(
