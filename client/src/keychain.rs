@@ -2,9 +2,9 @@ use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::PathBuf;
+use tatu_common::keys::{RemoteTatuKey, TatuKey};
 use tatu_common::model::HandleClaim;
 use thiserror::Error;
-use x25519;
 
 #[derive(Debug, Error)]
 pub enum PinError {
@@ -15,8 +15,8 @@ pub enum PinError {
 }
 
 pub struct Keychain<'a> {
-    pub identity: &'a x25519::StaticSecret,
-    known_servers: HashMap<String, x25519::PublicKey>,
+    pub identity: &'a TatuKey,
+    known_servers: HashMap<String, RemoteTatuKey>,
 
     handles_dir: PathBuf,
     servers_path: PathBuf,
@@ -24,7 +24,7 @@ pub struct Keychain<'a> {
 
 impl<'a> Keychain<'a> {
     pub fn new(
-        master_key: &'a x25519::StaticSecret,
+        master_key: &'a TatuKey,
         handles_dir: impl Into<PathBuf>,
         servers_path: impl Into<PathBuf>,
     ) -> io::Result<Self> {
@@ -39,7 +39,7 @@ impl<'a> Keychain<'a> {
         })
     }
 
-    fn load_pins(path: &PathBuf) -> io::Result<HashMap<String, x25519::PublicKey>> {
+    fn load_pins(path: &PathBuf) -> io::Result<HashMap<String, RemoteTatuKey>> {
         let mut pins = HashMap::new();
         if !path.exists() {
             return Ok(pins);
@@ -65,7 +65,7 @@ impl<'a> Keychain<'a> {
             }
 
             let hostname = parts[0].to_string();
-            let pubkey = tatu_common::keys::parse_public_key_base58(parts[1]).map_err(|e| {
+            let pubkey = RemoteTatuKey::from_base58(parts[1]).map_err(|e| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!("Invalid key on line {}: {}", line_num + 1, e),
@@ -82,10 +82,7 @@ impl<'a> Keychain<'a> {
         let mut lines: Vec<String> = self
             .known_servers
             .iter()
-            .map(|(host, key)| {
-                let key_b58 = base58::ToBase58::to_base58(&key.as_bytes()[..]);
-                format!("{} {}", host, key_b58)
-            })
+            .map(|(host, key)| format!("{} {}", host, key))
             .collect();
 
         lines.sort();
@@ -96,7 +93,7 @@ impl<'a> Keychain<'a> {
 
     pub fn get_handle(&self, nick: &str) -> io::Result<HandleClaim> {
         let file_path = self.handles_dir.join(format!("{}.nick", nick));
-        let public_key = x25519::PublicKey::from(self.identity);
+        let public_key = self.identity.x_pub();
 
         let claim = match file_path.exists() {
             true => {
@@ -109,13 +106,13 @@ impl<'a> Keychain<'a> {
                     Err(_) => {
                         tracing::warn!("Invalid handle claim found for '{}', remining...", nick);
                         fs::remove_file(&file_path)?;
-                        HandleClaim::mine(nick.to_string(), &self.identity)
+                        HandleClaim::mine(nick.to_string(), &self.identity.x_key())
                     }
                 }
             }
             false => {
                 tracing::info!("Mining new handle claim for '{}'...", nick);
-                HandleClaim::mine(nick.to_string(), &self.identity)
+                HandleClaim::mine(nick.to_string(), &self.identity.x_key())
             }
         };
 
@@ -129,11 +126,11 @@ impl<'a> Keychain<'a> {
         Ok(claim)
     }
 
-    pub fn id_server(&self, host: &str, key: &x25519::PublicKey) -> Result<(), PinError> {
+    pub fn id_server(&self, host: &str, key: &RemoteTatuKey) -> Result<(), PinError> {
         match self.known_servers.get(host) {
             None => Err(PinError::NotKnown),
             Some(pinned_key) => {
-                if pinned_key.as_bytes() == key.as_bytes() {
+                if pinned_key == key {
                     Ok(())
                 } else {
                     Err(PinError::Mismatch)
@@ -142,7 +139,7 @@ impl<'a> Keychain<'a> {
         }
     }
 
-    pub fn pin_server(&mut self, host: String, key: x25519::PublicKey) -> io::Result<()> {
+    pub fn pin_server(&mut self, host: String, key: RemoteTatuKey) -> io::Result<()> {
         self.known_servers.insert(host, key);
         self.save_pins()
     }

@@ -2420,6 +2420,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_bytes"
+version = "0.11.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a5d440709e79d88e51ac01c4b72fc6cb7314017bb7da9eeff678aa94c10e3ea8"
+dependencies = [
+ "serde",
+ "serde_core",
+]
+
+[[package]]
 name = "serde_core"
 version = "1.0.228"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2774,6 +2784,8 @@ dependencies = [
  "rmp-serde",
  "rug",
  "serde",
+ "serde_bytes",
+ "sha2 0.10.9",
  "snow",
  "thiserror 2.0.17",
  "tokio",
@@ -2782,6 +2794,7 @@ dependencies = [
  "uuid",
  "x25519-dalek",
  "xeddsa",
+ "zeroize",
 ]
 
 [[package]]

@@ -9,6 +9,8 @@ x25519.workspace = true
 xeddsa = "1.0"
 
 blake2 = "0.10"
+sha2 = "0.10"
+zeroize = "1.8.2"
 rug = { version = "1.28", default-features = false, features = ["integer", "std", "serde"] } # consider crypto-bigint/crypto-primes
 snow = { version = "0.10", default-features = false, features = [ "use-curve25519", "use-chacha20poly1305", "use-blake2", "use-getrandom" ] }
 rand.workspace = true
@@ -16,6 +18,7 @@ rand.workspace = true
 azalea.workspace = true
 
 serde = { version = "1.0", features = ["derive"] }
+serde_bytes = "0.11"
 rmp-serde.workspace = true
 
 tokio.workspace = true

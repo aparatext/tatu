@@ -85,11 +85,20 @@ pub struct HandleClaim {
     pub vdf_proof: VdfProof,
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct AuthMessage {
-    pub handle_claim: HandleClaim,
-    pub skin: Option<String>,
-}
+// NOTE: Maybe consider replacing XEdDSA with Ed25519 -> X25519
+
+// Its randomness makes backing up handles impossible
+// and faking it will break its DH security.
+
+// It also presents undue burden on the alternative impls,
+// requiring primitives like eligator to even implement.
+
+// The reverse however is possible. We can define our TatuKey (TatuID?) type
+// to have .as_ed25519 and pass/get that in mine/verify, also consolidating
+// some logic like display, while Noise gets the .as_x25519?
+
+// We would preferably include the ed25519 key in the message, or we'd have
+// to check two possible candidates.
 
 impl HandleClaim {
     pub fn mine(nick: String, key: &x25519::StaticSecret) -> Self {
@@ -98,6 +107,8 @@ impl HandleClaim {
 
         let xed_key = PrivateKey::from(key);
         let nick_sig: ed25519::Signature = xed_key.sign(nick.as_bytes(), rand::rngs::OsRng);
+
+        // TODO: Validate usernames to not include #, error otherwise.
 
         HandleClaim {
             nick,
@@ -123,4 +134,10 @@ impl HandleClaim {
         .concat();
         Ok(Handle::from(self.nick, seed))
     }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct AuthMessage {
+    pub handle_claim: HandleClaim,
+    pub skin: Option<String>,
 }

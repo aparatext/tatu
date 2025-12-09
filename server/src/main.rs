@@ -8,7 +8,6 @@ use tatu_common::model::Persona;
 use tatu_common::noise::NoisePipe;
 use tokio::net::{TcpListener, TcpStream};
 use uuid::Uuid;
-use x25519;
 
 const DEFAULT_LISTEN_ADDR: &str = "127.0.0.1:25519";
 const DEFAULT_BACKEND_ADDR: &str = "127.0.0.1:25564";
@@ -23,16 +22,21 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let args: Vec<String> = std::env::args().collect();
-    let listen_addr = args.get(1).map(String::as_str).unwrap_or(DEFAULT_LISTEN_ADDR);
-    let backend_addr = args.get(2).map(String::as_str).unwrap_or(DEFAULT_BACKEND_ADDR);
-    let key_path = std::env::var("TATU_SERVER_KEY")
-        .unwrap_or_else(|_| DEFAULT_KEY_PATH.to_string());
+    let listen_addr = args
+        .get(1)
+        .map(String::as_str)
+        .unwrap_or(DEFAULT_LISTEN_ADDR);
+    let backend_addr = args
+        .get(2)
+        .map(String::as_str)
+        .unwrap_or(DEFAULT_BACKEND_ADDR);
+    let key_path =
+        std::env::var("TATU_SERVER_KEY").unwrap_or_else(|_| DEFAULT_KEY_PATH.to_string());
 
     BACKEND_ADDR.set(backend_addr.to_string()).unwrap();
 
-    let keypair = Arc::new(keys::load_or_gen(Path::new(&key_path))?);
-    let pubkey = x25519::PublicKey::from(keypair.as_ref());
-    tracing::info!("Server key: {}", keys::friendly_pub(&pubkey));
+    let keypair = Arc::new(keys::TatuKey::load_or_generate(Path::new(&key_path))?);
+    tracing::info!("Server key: {}", keypair);
     tracing::info!("Post this to multiple independent channels for enchanced protection!");
 
     let listener = TcpListener::bind(listen_addr).await?;
@@ -54,7 +58,7 @@ async fn main() -> anyhow::Result<()> {
 async fn handle_connection(
     stream: TcpStream,
     client_addr: std::net::SocketAddr,
-    keypair: &x25519::StaticSecret,
+    keypair: &keys::TatuKey,
 ) -> anyhow::Result<()> {
     let (client, persona) = authenticate_client(stream, keypair).await?;
     tracing::info!("{} connected from {}", persona, client_addr.ip());
@@ -70,12 +74,12 @@ async fn handle_connection(
 
 async fn authenticate_client(
     stream: TcpStream,
-    keypair: &x25519::StaticSecret,
+    keypair: &keys::TatuKey,
 ) -> anyhow::Result<(NoisePipe<TcpStream>, Persona)> {
     use futures::StreamExt;
     use tatu_common::model::AuthMessage;
 
-    let mut secure_stream = NoisePipe::accept(stream, keypair).await?;
+    let mut secure_stream = NoisePipe::accept(stream, &keypair.x_key()).await?;
     let client_key = secure_stream.remote_public_key()?;
 
     let auth_bytes = secure_stream

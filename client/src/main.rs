@@ -6,6 +6,7 @@ use keychain::Keychain;
 use once_cell::sync::OnceCell;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tatu_common::keys::{RemoteTatuKey, TatuKey};
 use tatu_common::noise::NoisePipe;
 use tokio::net::{TcpListener, TcpStream};
 
@@ -13,7 +14,7 @@ const DEFAULT_LISTEN_ADDR: &str = "127.0.0.1:25565";
 const DEFAULT_PROXY_ADDR: &str = "127.0.0.1:25519";
 
 static PROXY_ADDR: OnceCell<String> = OnceCell::new();
-static IDENTITY_KEY: OnceCell<Arc<x25519::StaticSecret>> = OnceCell::new();
+static IDENTITY_KEY: OnceCell<Arc<TatuKey>> = OnceCell::new();
 static HANDLES_DIR: OnceCell<PathBuf> = OnceCell::new();
 static SERVERS_PIN_PATH: OnceCell<PathBuf> = OnceCell::new();
 
@@ -24,27 +25,39 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let args: Vec<String> = std::env::args().collect();
-    let listen_addr = args.get(1).map(String::as_str).unwrap_or(DEFAULT_LISTEN_ADDR);
-    let proxy_addr = args.get(2).map(String::as_str).unwrap_or(DEFAULT_PROXY_ADDR);
+    let listen_addr = args
+        .get(1)
+        .map(String::as_str)
+        .unwrap_or(DEFAULT_LISTEN_ADDR);
+    let proxy_addr = args
+        .get(2)
+        .map(String::as_str)
+        .unwrap_or(DEFAULT_PROXY_ADDR);
 
     PROXY_ADDR.set(proxy_addr.to_string()).unwrap();
 
     let identity_key_path = std::env::var("TATU_KEY")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("tatu-id.key"));
-    let identity_key = Arc::new(tatu_common::keys::load_or_gen(&identity_key_path)?);
+    let identity_key = Arc::new(tatu_common::keys::TatuKey::load_or_generate(
+        &identity_key_path,
+    )?);
     IDENTITY_KEY.set(identity_key).ok();
 
-    HANDLES_DIR.set(
-        std::env::var("TATU_HANDLES")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("tatu-handles"))
-    ).unwrap();
-    SERVERS_PIN_PATH.set(
-        std::env::var("TATU_KNOWN_SERVERS")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("tatu-servers.pin"))
-    ).unwrap();
+    HANDLES_DIR
+        .set(
+            std::env::var("TATU_HANDLES")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from("tatu-handles")),
+        )
+        .unwrap();
+    SERVERS_PIN_PATH
+        .set(
+            std::env::var("TATU_KNOWN_SERVERS")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from("tatu-servers.pin")),
+        )
+        .unwrap();
 
     let listener = TcpListener::bind(listen_addr).await?;
     tracing::info!("Client proxy listening on {listen_addr}, forwarding to {proxy_addr}");
@@ -79,18 +92,15 @@ async fn handle_client(
         SERVERS_PIN_PATH.get().unwrap(),
     )?;
 
-    let mut secure_pipe = NoisePipe::connect(tcp_stream, &keychain.identity).await?;
+    let mut secure_pipe = NoisePipe::connect(tcp_stream, &keychain.identity.x_key()).await?;
 
-    let server_key = secure_pipe.remote_public_key()?;
+    let server_key = RemoteTatuKey::from_x_pub(secure_pipe.remote_public_key()?);
     match keychain.id_server(proxy_addr, &server_key) {
         Ok(()) => {
             tracing::info!("Server key verified");
         }
         Err(keychain::PinError::NotKnown) => {
-            tracing::warn!(
-                "Server not known, pinning key: {}",
-                tatu_common::keys::friendly_pub(&server_key)
-            );
+            tracing::warn!("Server not known, pinning key: {}", server_key);
             keychain.pin_server(proxy_addr.to_string(), server_key)?;
             tracing::info!("Verify this key through a trusted channel!")
         }
