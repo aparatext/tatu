@@ -102,7 +102,10 @@ impl<'a> Keychain<'a> {
                     Ok(claim) => match claim.clone().verify(&public_key) {
                         Ok(_) => claim,
                         Err(_) => {
-                            tracing::warn!("Handle claim for '{}' failed verification, remining...", nick);
+                            tracing::warn!(
+                                "Handle claim for '{}' failed verification, remining...",
+                                nick
+                            );
                             fs::remove_file(&file_path)?;
                             HandleClaim::mine(nick.to_string(), &self.identity.ed_key())
                         }

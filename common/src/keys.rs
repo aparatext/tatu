@@ -34,7 +34,7 @@ impl TatuKey {
     }
 
     pub fn x_key(&self) -> StaticSecret {
-        let hash = Sha512::digest(&self.seed);
+        let hash = Sha512::digest(self.seed);
         let mut scalar = [0u8; 32];
         scalar.copy_from_slice(&hash[..32]);
         StaticSecret::from(scalar)
@@ -54,7 +54,7 @@ impl TatuKey {
     }
 
     pub fn save(&self, path: &Path) -> Result<(), KeyError> {
-        fs::write(path, &self.seed)?;
+        fs::write(path, self.seed)?;
 
         #[cfg(unix)]
         {
