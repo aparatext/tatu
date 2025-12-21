@@ -122,7 +122,7 @@ async fn minecraft_login(
 
     conn.write(ServerboundHandshakePacket::Intention(
         ServerboundIntention {
-            hostname: bungeecord_hostname(client_ip, persona.uuid()),
+            hostname: bungeecord_hostname(client_ip, persona.uuid(), persona.skin.clone()),
             protocol_version: azalea::protocol::packets::PROTOCOL_VERSION,
             port: backend_port,
             intention: ClientIntention::Login,
@@ -141,8 +141,12 @@ async fn minecraft_login(
     Ok(login_conn.into_split_raw())
 }
 
-fn bungeecord_hostname(client_ip: std::net::IpAddr, uuid: Uuid) -> String {
-    format!("localhost\0{client_ip}\0{}\0[]", uuid.as_hyphenated())
+fn bungeecord_hostname(client_ip: std::net::IpAddr, uuid: Uuid, skin: Option<String>) -> String {
+    format!(
+        "localhost\0{client_ip}\0{}\0{}",
+        uuid.as_hyphenated(),
+        skin.unwrap_or("[]".to_string())
+    )
 }
 
 // NOTE: forward_messages duped between client/server. Should it be in common?

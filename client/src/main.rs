@@ -15,6 +15,7 @@ const DEFAULT_PROXY_ADDR: &str = "127.0.0.1:25519";
 
 static PROXY_ADDR: OnceCell<String> = OnceCell::new();
 static IDENTITY_KEY: OnceCell<Arc<TatuKey>> = OnceCell::new();
+static SKIN_PATH: OnceCell<PathBuf> = OnceCell::new();
 static HANDLES_DIR: OnceCell<PathBuf> = OnceCell::new();
 static SERVERS_PIN_PATH: OnceCell<PathBuf> = OnceCell::new();
 
@@ -25,6 +26,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let args: Vec<String> = std::env::args().collect();
+
     let listen_addr = args
         .get(1)
         .map(String::as_str)
@@ -34,14 +36,17 @@ async fn main() -> anyhow::Result<()> {
         .map(String::as_str)
         .unwrap_or(DEFAULT_PROXY_ADDR);
 
+    let skin_arg = args.get(3).map(PathBuf::from);
+    if let Some(path) = skin_arg {
+        SKIN_PATH.set(path).unwrap();
+    }
+
     PROXY_ADDR.set(proxy_addr.to_string()).unwrap();
 
     let identity_key_path = std::env::var("TATU_KEY")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("tatu-id.key"));
-    let identity_key = Arc::new(tatu_common::keys::TatuKey::load_or_generate(
-        &identity_key_path,
-    )?);
+    let identity_key = Arc::new(TatuKey::load_or_generate(&identity_key_path)?);
     IDENTITY_KEY.set(identity_key).ok();
 
     HANDLES_DIR
@@ -109,9 +114,16 @@ async fn handle_client(
         }
     }
 
+    let skin = SKIN_PATH
+        .get()
+        .map(std::fs::read_to_string)
+        .transpose()?
+        .map(valid_json)
+        .transpose()?;
+
     let auth_msg = tatu_common::model::AuthMessage {
         handle_claim: keychain.get_handle(&nick)?,
-        skin: None, // TODO: Support custom skins
+        skin,
     };
 
     secure_pipe
@@ -123,6 +135,22 @@ async fn handle_client(
     tracing::info!("Disconnected");
 
     result
+}
+
+fn valid_json(s: String) -> anyhow::Result<String> {
+    let t = s.trim();
+
+    if !t.starts_with('{') && !t.starts_with('[') {
+        anyhow::bail!("Not JSON given");
+    }
+    if !t.ends_with('}') && !t.ends_with(']') {
+        anyhow::bail!("JSON cut off");
+    }
+    if t.contains('{') && t.contains(':') && !t.contains("\":") {
+        anyhow::bail!("Given SNBT, not JSON (tip: quote the fields)");
+    }
+
+    Ok(s)
 }
 
 async fn read_minecraft_login(
