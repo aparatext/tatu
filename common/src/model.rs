@@ -1,5 +1,5 @@
 use crate::keys::RemoteTatuKey;
-use crate::vdf::VdfProof;
+use crate::vdf;
 use anyhow::anyhow;
 use blake2::{
     Blake2b, Digest,
@@ -85,7 +85,7 @@ pub struct HandleClaim {
     pub nick: String,
     pub nick_sig: ed25519::Signature,
     pub sig_key: ed25519::VerifyingKey,
-    pub vdf_proof: VdfProof,
+    pub vdf_proof: vdf::Proof,
 }
 
 impl HandleClaim {
@@ -99,7 +99,7 @@ impl HandleClaim {
             nick,
             nick_sig,
             sig_key: sig_key.verifying_key(),
-            vdf_proof: VdfProof::mine(&nick_sig.to_bytes()),
+            vdf_proof: vdf::Proof::mine(&nick_sig.to_bytes()),
         }
     }
 
