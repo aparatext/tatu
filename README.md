@@ -17,7 +17,10 @@ Tatu provides players with a persistent, cross-server identity without relying o
     - [ ] Skins
     - [ ] Inject client errors as Minecraft connection errors
     - [ ] Inject server key as client chat message
-- [ ] v1 Specification
+    - [ ] Support arbitrary Minecraft protocol version
+    - [ ] Support FML handshake
+- [ ] Specify v1 protocol
+    - [ ] Versioning, magic
 
 *Future work*
   - [ ] Fast Noise_KK handshake with known server key

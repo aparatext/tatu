@@ -1,5 +1,7 @@
 target/
 
+*.kate-swp
+
 tatu-id.key
 tatu-handles/
 tatu-server.key
