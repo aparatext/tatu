@@ -4,6 +4,7 @@ use bytes::Bytes;
 use clap::Parser;
 use futures::{SinkExt, StreamExt};
 use keychain::Keychain;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tatu_common::keys::{RemoteTatuKey, TatuKey};
@@ -46,7 +47,8 @@ struct Args {
 struct Runtime {
     proxy_addr: String,
     skin: Option<Arc<str>>,
-    keychain: Mutex<Keychain>,
+    keychain: Arc<Keychain>,
+    nick_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
 }
 
 impl Runtime {
@@ -67,7 +69,8 @@ impl Runtime {
         Ok(Self {
             proxy_addr: args.proxy_addr.clone(),
             skin,
-            keychain: Mutex::new(keychain),
+            keychain: Arc::new(keychain),
+            nick_locks: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 }
@@ -144,61 +147,88 @@ async fn handle_client(stream: TcpStream, rt: Arc<Runtime>) -> anyhow::Result<()
     let (mc_read, mut mc_write, nick) = read_mc_login(stream).await?;
     tracing::info!("Connecting as {nick}");
 
-    // Check if handle is cached before proceeding
-    if !rt.keychain.lock().await.is_handle_cached(&nick) {
-        tracing::info!("Handle not cached for '{}', mining...", nick);
-        send_disconnect(
-            &mut mc_write,
-            "§6Mining your handle discriminator...
+    let nick_lock = {
+        let mut locks = rt.nick_locks.lock().await;
+        locks
+            .entry(nick.clone())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    };
+
+    let _guard = match nick_lock.try_lock() {
+        Ok(guard) => guard,
+        Err(_) => {
+            send_disconnect(
+                &mut mc_write,
+                "§6Mining your handle discriminator...
+
+§7Another connection is mining this nick.
+§7Reconnect in a moment.",
+            )
+            .await?;
+            drop(mc_read);
+            drop(mc_write);
+            return Ok(());
+        }
+    };
+
+    let handle_claim = match rt.keychain.load_handle(&nick) {
+        Ok(claim) => claim,
+        Err(keychain::LoadHandleError::NeedsMining) => {
+            tracing::info!("Handle not cached for '{}', mining...", nick);
+            send_disconnect(
+                &mut mc_write,
+                "§6Mining your handle discriminator...
 
 §7This should take 40 seconds, once per nick.
 §7Reconnect after it's done.",
-        )
-        .await?;
+            )
+            .await?;
 
-        // Mine synchronously (blocks this connection task)
-        let rt_clone = Arc::clone(&rt);
-        let nick_clone = nick.clone();
-        tokio::task::spawn_blocking(move || {
-            rt_clone.keychain.blocking_lock().get_handle(&nick_clone)
-        }).await??;
+            drop(mc_read);
+            drop(mc_write);
 
-        tracing::info!("Handle mined for '{}'", nick);
-        return Ok(());
-    }
+            let keychain = Arc::clone(&rt.keychain);
+            let nick_clone = nick.clone();
+            tokio::task::spawn_blocking(move || keychain.mine_handle(&nick_clone)).await??;
+
+            tracing::info!("Handle mined for '{}'", nick);
+            return Ok(());
+        }
+        Err(keychain::LoadHandleError::Io(e)) => return Err(e.into()),
+    };
 
     let tcp_stream = TcpStream::connect(&rt.proxy_addr).await?;
     tcp_stream.set_nodelay(true)?;
 
-    let x_key = rt.keychain.lock().await.identity.x_key();
+    let x_key = rt.keychain.identity.x_key();
     let mut secure_pipe = NoisePipe::connect(tcp_stream, &x_key).await?;
 
     let server_key = RemoteTatuKey::from_x_pub(secure_pipe.remote_public_key()?);
 
-    let (handle_claim, chat_message) = {
-        let mut keychain = rt.keychain.lock().await;
-
-        let message = match keychain.id_server(&rt.proxy_addr, &server_key) {
+    let chat_message = {
+        match rt.keychain.id_server(&rt.proxy_addr, &server_key) {
             Ok(()) => {
                 tracing::info!("Server key verified");
                 None
             }
             Err(keychain::PinError::NotKnown) => {
                 tracing::warn!("Server not known, pinning key: {server_key}");
-                keychain.pin_server(rt.proxy_addr.clone(), server_key)?;
+                rt.keychain.pin_server(rt.proxy_addr.clone(), server_key)?;
                 tracing::info!("Verify this key through a trusted channel!");
 
                 fn chunked_key(key: String) -> String {
                     key.chars()
-                    .collect::<Vec<_>>()
-                    .chunks(11)
-                    .map(|c| c.iter().collect::<String>())
-                    .collect::<Vec<_>>()
-                    .join(" ")
+                        .collect::<Vec<_>>()
+                        .chunks(11)
+                        .map(|c| c.iter().collect::<String>())
+                        .collect::<Vec<_>>()
+                        .join(" ")
                 }
 
                 Some(format!(
-                    "§6tatu: new server saved:\n§e{}\n§6tatu: it should match the key outside the game!",
+                    "§6tatu: new server saved:\n§e{}
+§6tatu: it should match the key outside the game!",
                     chunked_key(server_key.to_string())
                 ))
             }
@@ -216,11 +246,11 @@ being wiretapped.
 tatu-servers.pin",
                 )
                 .await?;
+                drop(mc_read);
+                drop(mc_write);
                 anyhow::bail!("Server key mismatch! Potential MITM attack detected");
             }
-        };
-
-        (keychain.get_handle(&nick)?, message)
+        }
     };
 
     let auth_msg = tatu_common::model::AuthMessage {
@@ -237,10 +267,10 @@ tatu-servers.pin",
     let (mc_read, mut mc_write, secure_pipe) =
         wait_for_game_state(mc_read, mc_write, secure_pipe).await?;
 
-    if let Some(message) = chat_message {
-        if let Err(e) = inject_message(&mut mc_write, &message).await {
-            tracing::warn!("Failed to inject chat message: {e}");
-        }
+    if let Some(message) = chat_message
+        && let Err(e) = inject_message(&mut mc_write, &message).await
+    {
+        tracing::warn!("Failed to inject chat message: {e}");
     }
 
     let result = forward_messages(mc_read, mc_write, secure_pipe).await;
@@ -404,24 +434,24 @@ async fn wait_for_login(
                     Ok(bytes) => {
                         if login_finished_sent && !in_config_phase {
                             let mut cursor = std::io::Cursor::new(&bytes[..]);
-                            if let Ok(packet) = deserialize_packet::<ServerboundLoginPacket>(&mut cursor) {
-                                if matches!(packet, ServerboundLoginPacket::LoginAcknowledged(_)) {
-                                    proxy_sink.send(Bytes::from(bytes)).await?;
-                                    proxy_sink.flush().await?;
-                                    in_config_phase = true;
-                                    continue;
-                                }
+                            if let Ok(packet) = deserialize_packet::<ServerboundLoginPacket>(&mut cursor)
+                                && matches!(packet, ServerboundLoginPacket::LoginAcknowledged(_))
+                            {
+                                proxy_sink.send(Bytes::from(bytes)).await?;
+                                proxy_sink.flush().await?;
+                                in_config_phase = true;
+                                continue;
                             }
                         }
 
                         if in_config_phase && config_finished_sent {
                             let mut cursor = std::io::Cursor::new(&bytes[..]);
-                            if let Ok(packet) = deserialize_packet::<ServerboundConfigPacket>(&mut cursor) {
-                                if matches!(packet, ServerboundConfigPacket::FinishConfiguration(_)) {
-                                    proxy_sink.send(Bytes::from(bytes)).await?;
-                                    proxy_sink.flush().await?;
-                                    return Ok(true);
-                                }
+                            if let Ok(packet) = deserialize_packet::<ServerboundConfigPacket>(&mut cursor)
+                                && matches!(packet, ServerboundConfigPacket::FinishConfiguration(_))
+                            {
+                                proxy_sink.send(Bytes::from(bytes)).await?;
+                                proxy_sink.flush().await?;
+                                return Ok(true);
                             }
                         }
 
@@ -436,23 +466,23 @@ async fn wait_for_login(
                     Some(Ok(bytes)) => {
                         if !login_finished_sent {
                             let mut cursor = std::io::Cursor::new(&bytes[..]);
-                            if let Ok(packet) = deserialize_packet::<ClientboundLoginPacket>(&mut cursor) {
-                                if matches!(packet, ClientboundLoginPacket::LoginFinished(_)) {
-                                    mc_write.write(&bytes).await?;
-                                    login_finished_sent = true;
-                                    continue;
-                                }
+                            if let Ok(packet) = deserialize_packet::<ClientboundLoginPacket>(&mut cursor)
+                                && matches!(packet, ClientboundLoginPacket::LoginFinished(_))
+                            {
+                                mc_write.write(&bytes).await?;
+                                login_finished_sent = true;
+                                continue;
                             }
                         }
 
                         if in_config_phase && !config_finished_sent {
                             let mut cursor = std::io::Cursor::new(&bytes[..]);
-                            if let Ok(packet) = deserialize_packet::<ClientboundConfigPacket>(&mut cursor) {
-                                if matches!(packet, ClientboundConfigPacket::FinishConfiguration(_)) {
-                                    mc_write.write(&bytes).await?;
-                                    config_finished_sent = true;
-                                    continue;
-                                }
+                            if let Ok(packet) = deserialize_packet::<ClientboundConfigPacket>(&mut cursor)
+                                && matches!(packet, ClientboundConfigPacket::FinishConfiguration(_))
+                            {
+                                mc_write.write(&bytes).await?;
+                                config_finished_sent = true;
+                                continue;
                             }
                         }
 

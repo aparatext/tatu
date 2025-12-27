@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use tatu_common::keys::{RemoteTatuKey, TatuKey};
 use tatu_common::model::HandleClaim;
 use thiserror::Error;
@@ -15,11 +15,18 @@ pub enum PinError {
     Mismatch,
 }
 
+#[derive(Debug, Error)]
+pub enum LoadHandleError {
+    #[error("Handle needs to be mined")]
+    NeedsMining,
+    #[error("IO error: {0}")]
+    Io(#[from] io::Error),
+}
+
 pub struct Keychain {
     pub identity: Arc<TatuKey>,
-    known_servers: HashMap<String, RemoteTatuKey>,
-
     handles_dir: PathBuf,
+    known_servers: RwLock<HashMap<String, RemoteTatuKey>>,
     servers_path: PathBuf,
 }
 
@@ -34,7 +41,7 @@ impl Keychain {
 
         Ok(Keychain {
             identity,
-            known_servers,
+            known_servers: RwLock::new(known_servers),
             handles_dir: handles_dir.into(),
             servers_path,
         })
@@ -80,8 +87,8 @@ impl Keychain {
     }
 
     fn save_pins(&self) -> io::Result<()> {
-        let mut lines: Vec<String> = self
-            .known_servers
+        let servers = self.known_servers.read().unwrap();
+        let mut lines: Vec<String> = servers
             .iter()
             .map(|(host, key)| format!("{} {}", host, key))
             .collect();
@@ -92,71 +99,54 @@ impl Keychain {
         fs::write(&self.servers_path, content)
     }
 
-    pub fn is_handle_cached(&self, nick: &str) -> bool {
+    pub fn load_handle(&self, nick: &str) -> Result<HandleClaim, LoadHandleError> {
         let file_path = self.handles_dir.join(format!("{}.nick", nick));
 
         if !file_path.exists() {
-            return false;
+            return Err(LoadHandleError::NeedsMining);
         }
 
-        // Validate the cached handle
-        let public_key = self.identity.x_pub();
-        if let Ok(data) = fs::read(&file_path) {
-            if let Ok(claim) = rmp_serde::from_slice::<HandleClaim>(&data) {
-                if claim.verify(&public_key).is_ok() {
-                    return true;
-                }
-                // Invalid claim - remove it
+        let data = fs::read(&file_path)?;
+        let claim = match rmp_serde::from_slice::<HandleClaim>(&data) {
+            Ok(claim) => claim,
+            Err(e) => {
+                tracing::warn!("Corrupt handle cache for '{}': {}, will remine", nick, e);
                 let _ = fs::remove_file(&file_path);
-            }
-        }
-        false
-    }
-
-    pub fn get_handle(&self, nick: &str) -> io::Result<HandleClaim> {
-        let file_path = self.handles_dir.join(format!("{}.nick", nick));
-        let public_key = self.identity.x_pub();
-
-        let claim = match file_path.exists() {
-            true => {
-                let data = fs::read(&file_path)?;
-                match rmp_serde::from_slice::<HandleClaim>(&data) {
-                    Ok(claim) => match claim.verify(&public_key) {
-                        Ok(_) => claim,
-                        Err(_) => {
-                            tracing::warn!(
-                                "Handle claim for '{}' failed verification, remining...",
-                                nick
-                            );
-                            fs::remove_file(&file_path)?;
-                            HandleClaim::mine(nick.to_string(), &self.identity.ed_key())
-                        }
-                    },
-                    Err(e) => {
-                        tracing::warn!("Corrupt handle cache for '{}': {}, remining...", nick, e);
-                        fs::remove_file(&file_path)?;
-                        HandleClaim::mine(nick.to_string(), &self.identity.ed_key())
-                    }
-                }
-            }
-            false => {
-                tracing::info!("Mining new handle claim for '{}'...", nick);
-                HandleClaim::mine(nick.to_string(), &self.identity.ed_key())
+                return Err(LoadHandleError::NeedsMining);
             }
         };
+
+        let public_key = self.identity.x_pub();
+        if let Err(e) = claim.verify(&public_key) {
+            tracing::warn!(
+                "Handle claim for '{}' failed verification: {}, will remine",
+                nick,
+                e
+            );
+            let _ = fs::remove_file(&file_path);
+            return Err(LoadHandleError::NeedsMining);
+        }
+
+        Ok(claim)
+    }
+
+    pub fn mine_handle(&self, nick: &str) -> io::Result<HandleClaim> {
+        tracing::info!("Mining new handle claim for '{}'...", nick);
+        let claim = HandleClaim::mine(nick.to_string(), &self.identity.ed_key());
 
         let data =
             rmp_serde::to_vec(&claim).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
         fs::create_dir_all(&self.handles_dir)?;
-        fs::write(&file_path, data)?;
+        fs::write(self.handles_dir.join(format!("{}.nick", nick)), data)?;
 
-        tracing::info!("Handle saved to {}", file_path.display());
+        tracing::info!("Handle mined and saved for '{}'", nick);
         Ok(claim)
     }
 
     pub fn id_server(&self, host: &str, key: &RemoteTatuKey) -> Result<(), PinError> {
-        match self.known_servers.get(host) {
+        let servers = self.known_servers.read().unwrap();
+        match servers.get(host) {
             None => Err(PinError::NotKnown),
             Some(pinned_key) => {
                 if pinned_key == key {
@@ -168,8 +158,10 @@ impl Keychain {
         }
     }
 
-    pub fn pin_server(&mut self, host: String, key: RemoteTatuKey) -> io::Result<()> {
-        self.known_servers.insert(host, key);
+    pub fn pin_server(&self, host: String, key: RemoteTatuKey) -> io::Result<()> {
+        let mut servers = self.known_servers.write().unwrap();
+        servers.insert(host, key);
+        drop(servers); // Release write lock before save_pins
         self.save_pins()
     }
 }
