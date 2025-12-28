@@ -21,7 +21,8 @@ Tatu provides players with a persistent, friendly cross-server identity without 
     - [x] Server error injection
     - [x] Server key indication in chat
     - [x] Arbitrary Minecraft protocol version
-    - [ ] Server ping forwarding
+    - [x] Server ping responses
+      - [ ] Forward actual ping data
     - [ ] Velocity forwarding
     - [ ] FML handshake
 - [ ] Specify v1 protocol

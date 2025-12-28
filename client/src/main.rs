@@ -173,24 +173,45 @@ fn recovery_prompt() -> anyhow::Result<RecoveryPhrase> {
     io::stdin().read_line(&mut input)?;
 
     let words: Vec<String> = input
-    .trim()
-    .split_whitespace()
-    .map(|s| s.to_lowercase())
-    .collect();
+        .trim()
+        .split_whitespace()
+        .map(|s| s.to_lowercase())
+        .collect();
 
     if words.len() != 12 {
         anyhow::bail!("Expected 12 words, got {}", words.len());
     }
 
     let phrase: RecoveryPhrase = words
-    .try_into()
-    .map_err(|_| anyhow::anyhow!("Failed to convert to recovery phrase"))?;
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("Failed to convert to recovery phrase"))?;
 
     Ok(phrase)
 }
 
 async fn handle_client(stream: TcpStream, rt: Arc<Runtime>) -> anyhow::Result<()> {
-    let (mc_conn, nick, handshake) = read_mc_login(stream).await?;
+    use azalea::protocol::{connect::Connection, packets::ClientIntention};
+
+    let mut conn = Connection::wrap(stream);
+
+    let handshake: ServerboundHandshakePacket = match conn.read().await {
+        Ok(handshake @ ServerboundHandshakePacket::Intention(_)) => handshake,
+        Err(_) => anyhow::bail!("Failed to read handshake"),
+    };
+
+    let intention = match &handshake {
+        ServerboundHandshakePacket::Intention(i) => &i.intention,
+    };
+
+    match intention {
+        ClientIntention::Status => {
+            return handle_ping(conn, &rt.proxy_addr).await;
+        }
+        ClientIntention::Login => {}
+        _ => anyhow::bail!("Unsupported intention type"),
+    }
+
+    let (mc_conn, nick) = finish_login_handshake(conn).await?;
     tracing::info!("Connecting as {nick}");
 
     let handle_claim = match rt.keychain.ensure_handle(&nick).await {
@@ -351,18 +372,13 @@ async fn send_disconnect(mc_conn: MCReadWriteConn, message: &str) -> anyhow::Res
     Ok(())
 }
 
-async fn read_mc_login(stream: TcpStream) -> anyhow::Result<(MCReadWriteConn, String, ServerboundHandshakePacket)> {
-    use protocol::{
-        connect::Connection,
-        packets::{handshake::ServerboundHandshakePacket, login::ServerboundLoginPacket},
-    };
-
-    let mut conn = Connection::wrap(stream);
-
-    let handshake = match conn.read().await {
-        Ok(handshake @ ServerboundHandshakePacket::Intention(_)) => handshake,
-        Err(_) => anyhow::bail!("Failed to read handshake"),
-    };
+async fn finish_login_handshake(
+    conn: azalea::protocol::connect::Connection<
+        ServerboundHandshakePacket,
+        azalea::protocol::packets::handshake::ClientboundHandshakePacket,
+    >,
+) -> anyhow::Result<(MCReadWriteConn, String)> {
+    use protocol::packets::login::ServerboundLoginPacket;
 
     let mut conn = conn.login();
 
@@ -381,7 +397,57 @@ async fn read_mc_login(stream: TcpStream) -> anyhow::Result<(MCReadWriteConn, St
     nick.truncate(MAX_NICK_LENGTH);
 
     let mc_conn = conn.into_split_raw();
-    Ok((mc_conn, nick, handshake))
+    Ok((mc_conn, nick))
+}
+
+async fn handle_ping(
+    conn: azalea::protocol::connect::Connection<
+        ServerboundHandshakePacket,
+        azalea::protocol::packets::handshake::ClientboundHandshakePacket,
+    >,
+    server_addr: &str,
+) -> anyhow::Result<()> {
+    use azalea::protocol::packets::status::{
+        ClientboundStatusPacket, ServerboundStatusPacket,
+        c_pong_response::ClientboundPongResponse,
+        c_status_response::{ClientboundStatusResponse, Players, Version},
+    };
+
+    let mut status_conn = conn.status();
+    let description = format!("§7{}\n§6A Tatu server", server_addr);
+
+    // Expect status request, send static response
+    if let Ok(ServerboundStatusPacket::StatusRequest(_)) = status_conn.read().await {
+        status_conn
+            .write(ClientboundStatusPacket::StatusResponse(
+                ClientboundStatusResponse {
+                    description: description.into(),
+                    favicon: None,
+                    players: Players {
+                        max: 0,
+                        online: 0,
+                        sample: vec![],
+                    },
+                    version: Version {
+                        name: "Tatu Proxy".to_string(),
+                        protocol: azalea::protocol::packets::PROTOCOL_VERSION,
+                    },
+                    enforces_secure_chat: Some(false),
+                },
+            ))
+            .await?;
+    }
+
+    // Expect ping request, send pong response
+    if let Ok(ServerboundStatusPacket::PingRequest(ping)) = status_conn.read().await {
+        status_conn
+            .write(ClientboundStatusPacket::PongResponse(
+                ClientboundPongResponse { time: ping.time },
+            ))
+            .await?;
+    }
+
+    Ok(())
 }
 
 async fn await_play(

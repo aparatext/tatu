@@ -99,9 +99,13 @@ async fn handle_connection(
 async fn authenticate_client(
     stream: TcpStream,
     keypair: &TatuKey,
-) -> anyhow::Result<(NoisePipe<TcpStream>, Persona, azalea::protocol::packets::handshake::ServerboundHandshakePacket)> {
-    use tatu_common::model::AuthMessage;
+) -> anyhow::Result<(
+    NoisePipe<TcpStream>,
+    Persona,
+    azalea::protocol::packets::handshake::ServerboundHandshakePacket,
+)> {
     use azalea::protocol::read::deserialize_packet;
+    use tatu_common::model::AuthMessage;
 
     let mut secure_stream = NoisePipe::accept(stream, &keypair.x_key()).await?;
     let client_key = secure_stream.remote_public_key()?;
