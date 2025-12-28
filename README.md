@@ -16,6 +16,7 @@ Tatu provides players with a persistent, friendly cross-server identity without 
     - [x] Server key pinning
 - [x] MessagePack wire
 - [x] BungeeCord forwarding, Minecraft packet rewriting
+    - [ ] Velocity Forwarding
     - [x] Skins
     - [x] Server error injection
     - [x] Server key indication in chat
