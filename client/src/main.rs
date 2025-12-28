@@ -55,14 +55,13 @@ struct Runtime {
 }
 
 fn resolve_paths(args: &Args) -> (PathBuf, PathBuf, PathBuf) {
-    let data_dir = dirs::data_dir().unwrap_or_else(|| PathBuf::from(".local/share"));
-    let cache_dir = dirs::cache_dir().unwrap_or_else(|| PathBuf::from(".cache"));
     let config_dir = dirs::config_dir().unwrap_or_else(|| PathBuf::from(".config"));
+    let cache_dir = dirs::cache_dir().unwrap_or_else(|| PathBuf::from(".cache"));
 
     let key_path = args
         .key_path
         .clone()
-        .unwrap_or_else(|| data_dir.join("tatu/identity.key"));
+        .unwrap_or_else(|| config_dir.join("tatu/identity.key"));
 
     let handles_path = args
         .handles_path
