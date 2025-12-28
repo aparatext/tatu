@@ -84,10 +84,10 @@ async fn handle_connection(
     client_addr: std::net::SocketAddr,
     rt: &Runtime,
 ) -> anyhow::Result<()> {
-    let (client, persona) = authenticate_client(stream, &rt.keypair).await?;
+    let (client, persona, client_handshake) = authenticate_client(stream, &rt.keypair).await?;
     tracing::info!("{} connected from {}", persona, client_addr.ip());
 
-    let backend_conn = minecraft_login(&persona, client_addr.ip(), rt).await?;
+    let backend_conn = minecraft_login(&persona, client_addr.ip(), &client_handshake, rt).await?;
 
     tracing::info!("{} joined", persona.handle);
     let result = forward_messages(client, backend_conn).await;
@@ -99,8 +99,9 @@ async fn handle_connection(
 async fn authenticate_client(
     stream: TcpStream,
     keypair: &TatuKey,
-) -> anyhow::Result<(NoisePipe<TcpStream>, Persona)> {
+) -> anyhow::Result<(NoisePipe<TcpStream>, Persona, azalea::protocol::packets::handshake::ServerboundHandshakePacket)> {
     use tatu_common::model::AuthMessage;
+    use azalea::protocol::read::deserialize_packet;
 
     let mut secure_stream = NoisePipe::accept(stream, &keypair.x_key()).await?;
     let client_key = secure_stream.remote_public_key()?;
@@ -111,13 +112,21 @@ async fn authenticate_client(
         .ok_or_else(|| anyhow::anyhow!("Connection closed before auth"))??;
     let auth_msg: AuthMessage = rmp_serde::from_slice(&auth_bytes)?;
 
+    let handshake_bytes = secure_stream
+        .next()
+        .await
+        .ok_or_else(|| anyhow::anyhow!("Connection closed before handshake"))??;
+    let mut cursor = std::io::Cursor::new(&handshake_bytes[..]);
+    let client_handshake = deserialize_packet(&mut cursor)?;
+
     let persona = Persona::auth(client_key, auth_msg.handle_claim, auth_msg.skin)?;
-    Ok((secure_stream, persona))
+    Ok((secure_stream, persona, client_handshake))
 }
 
 async fn minecraft_login(
     persona: &Persona,
     client_ip: std::net::IpAddr,
+    client_handshake: &azalea::protocol::packets::handshake::ServerboundHandshakePacket,
     rt: &Runtime,
 ) -> anyhow::Result<(
     azalea::protocol::connect::RawReadConnection,
@@ -126,9 +135,17 @@ async fn minecraft_login(
     use azalea::protocol::{
         connect::Connection,
         packets::{
-            ClientIntention,
             handshake::{ServerboundHandshakePacket, s_intention::ServerboundIntention},
             login::{ServerboundLoginPacket, s_hello::ServerboundHello},
+        },
+    };
+
+    let backend_handshake = match client_handshake {
+        ServerboundHandshakePacket::Intention(intention) => ServerboundIntention {
+            hostname: bungeecord_hostname(client_ip, persona.uuid(), persona.skin.clone()),
+            port: rt.backend_port(),
+            protocol_version: intention.protocol_version,
+            intention: intention.intention,
         },
     };
 
@@ -137,15 +154,8 @@ async fn minecraft_login(
 
     let mut conn = Connection::wrap(stream);
 
-    conn.write(ServerboundHandshakePacket::Intention(
-        ServerboundIntention {
-            hostname: bungeecord_hostname(client_ip, persona.uuid(), persona.skin.clone()),
-            protocol_version: azalea::protocol::packets::PROTOCOL_VERSION,
-            port: rt.backend_port(),
-            intention: ClientIntention::Login,
-        },
-    ))
-    .await?;
+    conn.write(ServerboundHandshakePacket::Intention(backend_handshake))
+        .await?;
 
     let mut login_conn = conn.login();
     login_conn

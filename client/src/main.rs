@@ -1,7 +1,10 @@
 mod keychain;
 
 use azalea::protocol::{
-    self, packets::game::ClientboundGamePacket, read::ReadPacketError, write::serialize_packet,
+    self,
+    packets::{game::ClientboundGamePacket, handshake::ServerboundHandshakePacket},
+    read::ReadPacketError,
+    write::serialize_packet,
 };
 use bytes::Bytes;
 use clap::Parser;
@@ -187,7 +190,7 @@ fn recovery_prompt() -> anyhow::Result<RecoveryPhrase> {
 }
 
 async fn handle_client(stream: TcpStream, rt: Arc<Runtime>) -> anyhow::Result<()> {
-    let (mc_conn, nick) = read_mc_login(stream).await?;
+    let (mc_conn, nick, handshake) = read_mc_login(stream).await?;
     tracing::info!("Connecting as {nick}");
 
     let handle_claim = match rt.keychain.ensure_handle(&nick).await {
@@ -268,6 +271,9 @@ tatu-servers.pin",
         .send(Bytes::from(rmp_serde::to_vec(&auth_msg)?))
         .await?;
 
+    let handshake_bytes = protocol::write::serialize_packet(&handshake)?;
+    secure_pipe.send(Bytes::from(handshake_bytes)).await?;
+
     tracing::info!("Connected to proxy server");
 
     let (mc_conn, secure_pipe) = await_play(mc_conn, secure_pipe).await?;
@@ -345,7 +351,7 @@ async fn send_disconnect(mc_conn: MCReadWriteConn, message: &str) -> anyhow::Res
     Ok(())
 }
 
-async fn read_mc_login(stream: TcpStream) -> anyhow::Result<(MCReadWriteConn, String)> {
+async fn read_mc_login(stream: TcpStream) -> anyhow::Result<(MCReadWriteConn, String, ServerboundHandshakePacket)> {
     use protocol::{
         connect::Connection,
         packets::{handshake::ServerboundHandshakePacket, login::ServerboundLoginPacket},
@@ -353,10 +359,10 @@ async fn read_mc_login(stream: TcpStream) -> anyhow::Result<(MCReadWriteConn, St
 
     let mut conn = Connection::wrap(stream);
 
-    match conn.read().await {
-        Ok(ServerboundHandshakePacket::Intention(_)) => {}
+    let handshake = match conn.read().await {
+        Ok(handshake @ ServerboundHandshakePacket::Intention(_)) => handshake,
         Err(_) => anyhow::bail!("Failed to read handshake"),
-    }
+    };
 
     let mut conn = conn.login();
 
@@ -375,7 +381,7 @@ async fn read_mc_login(stream: TcpStream) -> anyhow::Result<(MCReadWriteConn, St
     nick.truncate(MAX_NICK_LENGTH);
 
     let mc_conn = conn.into_split_raw();
-    Ok((mc_conn, nick))
+    Ok((mc_conn, nick, handshake))
 }
 
 async fn await_play(
