@@ -96,6 +96,20 @@ impl Runtime {
 
         let (identity, recovery_phrase) =
             TatuKey::load_or_generate(&key_path, recovery_phrase_input.as_ref())?;
+
+        if let Some(phrase) = &recovery_phrase {
+            tracing::warn!("New identity created. Recovery phrase:");
+            for (i, chunk) in phrase.chunks(4).enumerate() {
+                let start = i * 4;
+                let end = start + chunk.len() - 1;
+                eprintln!("  {}-{}: {}", start, end, chunk.join(" "));
+            }
+            eprintln!();
+            eprintln!("Without this phrase, you won't be able to recover your account on a new device.");
+            eprintln!("This will only be shown again in-game after your first connection.");
+            eprintln!();
+        }
+
         let identity = Arc::new(identity);
         let keychain = Keychain::new(identity, &handles_path, &known_servers_path)?;
 
@@ -307,11 +321,6 @@ tatu-servers.pin",
     }
 
     if let Some(phrase) = &rt.recovery_phrase {
-        tracing::warn!(
-            "New identity created. Recovery phrase: {}",
-            phrase.join(" ")
-        );
-
         let mut lines = vec![
             "§atatu: new identity created".to_string(),
             "§6tatu: write down your recovery phrase §cNOW§6 (it will be shown only once):"

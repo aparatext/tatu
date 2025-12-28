@@ -14,7 +14,7 @@ struct Args {
     #[arg(default_value = "127.0.0.1:25564")]
     backend_addr: String,
 
-    #[arg(long, default_value = "127.0.0.1:25519")]
+    #[arg(long, default_value = "0.0.0.0:25519")]
     listen_addr: String,
 
     #[arg(long, env = "TATU_SERVER_KEY", default_value = "tatu-server.key")]
