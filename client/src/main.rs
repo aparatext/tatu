@@ -7,13 +7,11 @@ use bytes::Bytes;
 use clap::Parser;
 use futures::{SinkExt, StreamExt};
 use keychain::Keychain;
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tatu_common::keys::{RemoteTatuKey, TatuKey};
 use tatu_common::noise::NoisePipe;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Mutex;
 
 type MCReadWriteConn = (
     azalea::protocol::connect::RawReadConnection,
@@ -56,7 +54,6 @@ struct Runtime {
     proxy_addr: String,
     skin: Option<Arc<str>>,
     keychain: Arc<Keychain>,
-    nick_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
 }
 
 impl Runtime {
@@ -77,7 +74,6 @@ impl Runtime {
             proxy_addr: args.proxy_addr.clone(),
             skin,
             keychain: Arc::new(keychain),
-            nick_locks: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 }
@@ -127,84 +123,21 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-async fn send_message(
-    mc_write: &mut azalea::protocol::connect::RawWriteConnection,
-    message: &str,
-) -> anyhow::Result<()> {
-    use azalea::FormattedText;
-    use protocol::packets::game::c_system_chat::ClientboundSystemChat;
-
-    let formatted_text: FormattedText = message.into();
-    let game_packet = ClientboundGamePacket::SystemChat(ClientboundSystemChat {
-        content: formatted_text,
-        overlay: false,
-    });
-    let bytes = serialize_packet(&game_packet)?;
-    mc_write.write(&bytes).await?;
-    Ok(())
-}
-
-async fn send_disconnect(mc_conn: MCReadWriteConn, message: &str) -> anyhow::Result<()> {
-    let (_mc_read, mut mc_write) = mc_conn;
-    use azalea::FormattedText;
-    use protocol::packets::login::{
-        ClientboundLoginPacket, c_login_disconnect::ClientboundLoginDisconnect,
-    };
-
-    let formatted_text: FormattedText = message.into();
-    let disconnect_packet = ClientboundLoginPacket::LoginDisconnect(ClientboundLoginDisconnect {
-        reason: formatted_text,
-    });
-    let bytes = serialize_packet(&disconnect_packet)?;
-    mc_write.write(&bytes).await?;
-    Ok(())
-}
-
 async fn handle_client(stream: TcpStream, rt: Arc<Runtime>) -> anyhow::Result<()> {
     let (mc_conn, nick) = read_mc_login(stream).await?;
     tracing::info!("Connecting as {nick}");
 
-    let nick_lock = {
-        let mut locks = rt.nick_locks.lock().await;
-        locks
-            .entry(nick.clone())
-            .or_insert_with(|| Arc::new(Mutex::new(())))
-            .clone()
-    };
-
-    let _guard = match nick_lock.try_lock() {
-        Ok(guard) => guard,
-        Err(_) => {
-            send_disconnect(
-                mc_conn,
-                "§6Mining your handle discriminator...
-
-§7Another connection is mining this nick.
-§7Reconnect in a moment.",
-            )
-            .await?;
-            return Ok(());
-        }
-    };
-
-    let handle_claim = match rt.keychain.load_handle(&nick) {
+    let handle_claim = match rt.keychain.ensure_handle(&nick).await {
         Ok(claim) => claim,
         Err(keychain::LoadHandleError::NeedsMining) => {
-            tracing::info!("Handle not cached for '{}', mining...", nick);
             send_disconnect(
                 mc_conn,
                 "§6Mining your handle discriminator...
 
-§7This should take 40 seconds, once per nick.
+§7This should take about 40 seconds.
 §7Reconnect after it's done.",
             )
             .await?;
-
-            let keychain = Arc::clone(&rt.keychain);
-            let nick_clone = nick.clone();
-            tokio::task::spawn_blocking(move || keychain.mine_handle(&nick_clone)).await??;
-
-            tracing::info!("Handle mined for '{}'", nick);
             return Ok(());
         }
         Err(keychain::LoadHandleError::Io(e)) => return Err(e.into()),
@@ -240,7 +173,7 @@ async fn handle_client(stream: TcpStream, rt: Arc<Runtime>) -> anyhow::Result<()
 
                 Some(format!(
                     "§6tatu: new server saved:\n§e{}
-§6tatu: it should match the key outside the game!",
+§6tatu: this should match the key outside the game!",
                     chunked_key(server_key.to_string())
                 ))
             }
@@ -287,6 +220,40 @@ tatu-servers.pin",
     tracing::info!("Disconnected");
 
     result
+}
+
+async fn send_message(
+    mc_write: &mut azalea::protocol::connect::RawWriteConnection,
+    message: &str,
+) -> anyhow::Result<()> {
+    use azalea::FormattedText;
+    use protocol::packets::game::c_system_chat::ClientboundSystemChat;
+
+    let ft: FormattedText = message.into();
+    let packet = ClientboundGamePacket::SystemChat(ClientboundSystemChat {
+        content: ft,
+        overlay: false,
+    });
+
+    let bytes = serialize_packet(&packet)?;
+    mc_write.write(&bytes).await?;
+    Ok(())
+}
+
+async fn send_disconnect(mc_conn: MCReadWriteConn, message: &str) -> anyhow::Result<()> {
+    use azalea::FormattedText;
+    use protocol::packets::login::{
+        ClientboundLoginPacket, c_login_disconnect::ClientboundLoginDisconnect,
+    };
+    let (_mc_read, mut mc_write) = mc_conn;
+
+    let ft: FormattedText = message.into();
+    let disconnect_packet =
+        ClientboundLoginPacket::LoginDisconnect(ClientboundLoginDisconnect { reason: ft });
+
+    let bytes = serialize_packet(&disconnect_packet)?;
+    mc_write.write(&bytes).await?;
+    Ok(())
 }
 
 async fn read_mc_login(stream: TcpStream) -> anyhow::Result<(MCReadWriteConn, String)> {

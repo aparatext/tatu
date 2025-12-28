@@ -12,14 +12,16 @@ Tatu provides players with a persistent, friendly cross-server identity without 
     - [x] Discriminator encoding
     - [x] Key files
     - [ ] Recovery phrases
+- [ ] XDG compliance
 - [x] Noise Pipe
-    - [x] Server key pinning
+    - [x] Server TOFU
 - [x] MessagePack wire
 - [x] BungeeCord forwarding, Minecraft packet rewriting
-    - [ ] Velocity Forwarding
+    - [ ] Velocity forwarding
     - [x] Skins
     - [x] Server error injection
     - [x] Server key indication in chat
+    - [ ] Server ping forwarding
     - [ ] Arbitrary Minecraft protocol version
     - [ ] FML handshake
 - [ ] Specify v1 protocol

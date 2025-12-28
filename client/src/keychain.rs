@@ -6,6 +6,7 @@ use std::sync::{Arc, RwLock};
 use tatu_common::keys::{RemoteTatuKey, TatuKey};
 use tatu_common::model::HandleClaim;
 use thiserror::Error;
+use tokio::sync::{Mutex, OnceCell};
 
 #[derive(Debug, Error)]
 pub enum PinError {
@@ -28,6 +29,7 @@ pub struct Keychain {
     handles_dir: PathBuf,
     known_servers: RwLock<HashMap<String, RemoteTatuKey>>,
     servers_path: PathBuf,
+    mining_cells: Mutex<HashMap<String, Arc<OnceCell<()>>>>,
 }
 
 impl Keychain {
@@ -44,6 +46,7 @@ impl Keychain {
             known_servers: RwLock::new(known_servers),
             handles_dir: handles_dir.into(),
             servers_path,
+            mining_cells: Mutex::new(HashMap::new()),
         })
     }
 
@@ -128,6 +131,49 @@ impl Keychain {
         }
 
         Ok(claim)
+    }
+
+    pub async fn ensure_handle(
+        self: &Arc<Self>,
+        nick: &str,
+    ) -> Result<HandleClaim, LoadHandleError> {
+        match self.load_handle(nick) {
+            Ok(claim) => return Ok(claim),
+            Err(LoadHandleError::Io(e)) => return Err(LoadHandleError::Io(e)),
+            Err(LoadHandleError::NeedsMining) => {}
+        }
+
+        let cell = {
+            let mut cells = self.mining_cells.lock().await;
+            cells
+                .entry(nick.to_owned())
+                .or_insert_with(|| Arc::new(OnceCell::new()))
+                .clone()
+        };
+
+        if cell.set(()).is_ok() {
+            let keychain = Arc::clone(self);
+            let nick_clone = nick.to_string();
+
+            tokio::task::spawn_blocking(move || {
+                match keychain.mine_handle(&nick_clone) {
+                    Ok(_) => {
+                        tracing::info!("Handle successfully mined for '{}'", nick_clone);
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to mine handle for '{}': {}", nick_clone, e);
+                        // Remove the cell so next connection can retry
+                        let handle = tokio::runtime::Handle::current();
+                        handle.block_on(async {
+                            let mut cells = keychain.mining_cells.lock().await;
+                            cells.remove(&nick_clone);
+                        });
+                    }
+                }
+            });
+        }
+
+        Err(LoadHandleError::NeedsMining)
     }
 
     pub fn mine_handle(&self, nick: &str) -> io::Result<HandleClaim> {
