@@ -25,12 +25,13 @@ Tatu provides players with a persistent, friendly cross-server identity without 
     - [ ] Versioning, magic
 
 *Future work*
-  - [ ] Fast Noise_KK handshake with known server key
-        - [ ] Client key pinning
-  - [ ] Broadcast peer keys for third-party integrations like voice chat
-  - [ ] Stream management & 1RTT session resumption?
-  - [ ] Protocol-aware flushing
-  - [ ] Custom chunk wire with Hilbert ordering + zstd?
+- [ ] SOCKS5 interface for in-game server selection
+- [ ] Fast Noise_KK handshake with known server key
+  - [ ] Client key pinning
+- [ ] Broadcast peer keys for third-party integrations like voice chat
+- [ ] Stream management & 1RTT session resumption?
+- [ ] Protocol-aware flushing
+- [ ] Custom chunk wire with Hilbert ordering + zstd?
 
 ## Setup
 
@@ -58,6 +59,9 @@ Tatu provides players with a persistent, friendly cross-server identity without 
       - Convert SNBT to JSON (add quotes around keys). It should now look something like this: `[{"name": "textures", "value": "ewogICJ0aW1lc3Rh...", "signature": "VbBnt+S6b/SpmBqY..."}]`
 
    - Save it as `my-wonderful.skin`
+   
 2. Run: `tatu-client my-awesome-server.net:25519 --skin my.skin`
+
 3. Set your nick in the launcher.
+
 4. Connect to `localhost:25565`.
