@@ -5,11 +5,9 @@ edition = "2024"
 
 [dependencies]
 ed25519 = { package = "ed25519-dalek", version = "2", features = ["serde"] }
-curve25519 = { package = "curve25519-dalek", version = "4.1" }
 x25519 = { package = "x25519-dalek", version = "2", features = ["static_secrets"] }
 
 blake2 = "0.10"
-sha2 = "0.10"
 snow = { version = "0.10", default-features = false, features = [ "use-curve25519", "use-chacha20poly1305", "use-blake2", "use-getrandom" ] }
 # consider crypto-bigint/crypto-primes
 rug = { version = "1.28", default-features = false, features = ["integer", "std", "serde"] }

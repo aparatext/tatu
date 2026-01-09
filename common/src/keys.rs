@@ -1,44 +1,42 @@
-use base58::{FromBase58, ToBase58};
+use serde::{Deserialize, Serialize};
+use std::fmt;
+use std::{fs, io, path::Path};
+use thiserror::Error;
+
 use blake2::{Blake2s256, Digest};
 use ed25519::{SigningKey, VerifyingKey};
-use proquint::Quintable;
-use sha2::Sha512;
-use std::fs;
-use std::io;
-use std::path::Path;
-use thiserror::Error;
 use x25519::{PublicKey, StaticSecret};
 use zeroize::{Zeroize, ZeroizeOnDrop};
+
+use base58::{FromBase58, ToBase58};
+use proquint::Quintable;
 
 const RECOVERY_WORDS: usize = 12;
 const ECC_BYTES: usize = (RECOVERY_WORDS * 2) - 16;
 
 pub type RecoveryPhrase = [String; RECOVERY_WORDS];
 
-#[derive(serde::Serialize, serde::Deserialize, Zeroize, ZeroizeOnDrop)]
+#[derive(Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 pub struct TatuKey {
     #[serde(with = "serde_bytes")]
     seed: [u8; 32],
 }
 
 impl TatuKey {
-    pub fn ed_key(&self) -> SigningKey {
-        SigningKey::from_bytes(&self.seed)
-    }
-
     pub fn ed_pub(&self) -> VerifyingKey {
         self.ed_key().verifying_key()
     }
 
-    pub fn x_key(&self) -> StaticSecret {
-        let hash = Sha512::digest(self.seed);
-        let mut scalar = [0u8; 32];
-        scalar.copy_from_slice(&hash[..32]);
-        StaticSecret::from(scalar)
+    pub fn ed_key(&self) -> SigningKey {
+        SigningKey::from_bytes(&self.seed)
     }
 
     pub fn x_pub(&self) -> PublicKey {
         PublicKey::from(&self.x_key())
+    }
+
+    pub fn x_key(&self) -> StaticSecret {
+        StaticSecret::from(self.ed_key().to_scalar_bytes())
     }
 
     pub fn load_or_generate(
@@ -123,11 +121,7 @@ impl RemoteTatuKey {
     }
 
     pub fn from_ed_pub(ed_pub: &VerifyingKey) -> Self {
-        use curve25519::edwards::CompressedEdwardsY;
-        let compressed = CompressedEdwardsY::from_slice(ed_pub.as_bytes()).unwrap();
-        let point = compressed.decompress().unwrap();
-        let montgomery = point.to_montgomery();
-        Self(PublicKey::from(*montgomery.as_bytes()))
+        Self(PublicKey::from(ed_pub.to_montgomery().to_bytes()))
     }
 
     pub fn x_pub(&self) -> &PublicKey {
