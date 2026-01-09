@@ -181,7 +181,8 @@ impl Keychain {
 
     pub fn mine_handle(&self, nick: &str) -> io::Result<HandleClaim> {
         tracing::info!("Mining new handle claim for '{}'...", nick);
-        let claim = HandleClaim::mine(nick.to_string(), &self.identity.ed_key());
+        let claim = HandleClaim::mine(nick.to_string(), &self.identity.ed_key())
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
 
         let data =
             rmp_serde::to_vec(&claim).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;

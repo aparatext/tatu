@@ -89,22 +89,30 @@ pub struct HandleClaim {
 }
 
 impl HandleClaim {
-    pub fn mine(nick: String, sig_key: &ed25519::SigningKey) -> Self {
+    pub fn mine(nick: String, sig_key: &ed25519::SigningKey) -> anyhow::Result<Self> {
         use ed25519::Signer;
+
+        if !nick.chars().all(|c| c.is_alphanumeric()) {
+            return Err(anyhow!("Nick must only contain alphanumeric characters"));
+        }
+
         let nick_sig = sig_key.sign(nick.as_bytes());
 
-        // TODO: Validate usernames to not include #, error otherwise.
-
-        HandleClaim {
+        Ok(HandleClaim {
             nick,
             nick_sig,
             sig_key: sig_key.verifying_key(),
             vdf_proof: vdf::Proof::mine(&nick_sig.to_bytes()),
-        }
+        })
     }
 
     pub fn verify(&self, x_pub: &x25519::PublicKey) -> anyhow::Result<Handle> {
         use ed25519::Verifier;
+
+        if !self.nick.chars().all(|c| c.is_alphanumeric()) {
+            return Err(anyhow!("Nick must only contain alphanumeric characters"));
+        }
+
         self.sig_key.verify(self.nick.as_bytes(), &self.nick_sig)?;
 
         let signer = RemoteTatuKey::from_ed_pub(&self.sig_key);
