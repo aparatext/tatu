@@ -14,7 +14,87 @@ use proquint::Quintable;
 const RECOVERY_WORDS: usize = 12;
 const ECC_BYTES: usize = (RECOVERY_WORDS * 2) - 16;
 
-pub type RecoveryPhrase = [String; RECOVERY_WORDS];
+#[derive(Zeroize, ZeroizeOnDrop)]
+pub struct RecoveryPhrase([u8; 16]);
+
+impl RecoveryPhrase {
+    pub fn from_entropy(entropy: [u8; 16]) -> Self {
+        Self(entropy)
+    }
+
+    pub fn to_entropy(&self) -> [u8; 16] {
+        self.0
+    }
+
+    pub fn parse(s: &str) -> Result<(Self, usize), RecoveryError> {
+        let words: Vec<&str> = s.split(['-', ' ']).collect();
+
+        if words.len() != RECOVERY_WORDS {
+            return Err(RecoveryError::InvalidFormat);
+        }
+
+        let mut encoded_bytes = Vec::with_capacity(RECOVERY_WORDS * 2);
+        for (i, pq) in words.iter().enumerate() {
+            let value = match u16::from_quint(pq) {
+                Ok(v) => v,
+                Err(_) => {
+                    tracing::warn!(
+                        "Invalid proquint at position {}: '{}', treating as 0x0000",
+                        i,
+                        pq
+                    );
+                    0
+                }
+            };
+            let bytes = value.to_be_bytes();
+            encoded_bytes.push(bytes[0]);
+            encoded_bytes.push(bytes[1]);
+        }
+
+        let dec = reed_solomon::Decoder::new(ECC_BYTES);
+        let (corrected, num_errors) = dec
+            .correct_err_count(&encoded_bytes, None)
+            .map_err(|_| RecoveryError::TooManyErrors)?;
+
+        if num_errors > 0 {
+            tracing::info!("Corrected {} bytes in recovery phrase", num_errors);
+        }
+
+        let data = corrected.data();
+        let mut entropy = [0u8; 16];
+        entropy.copy_from_slice(&data[..16]);
+
+        Ok((Self(entropy), num_errors))
+    }
+}
+
+impl fmt::Display for RecoveryPhrase {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use reed_solomon::Encoder;
+        use std::ops::Deref;
+
+        let enc = Encoder::new(ECC_BYTES);
+        let encoded = enc.encode(&self.0);
+
+        let all_bytes: &[u8] = encoded.deref();
+        let mut words: Vec<String> = Vec::with_capacity(RECOVERY_WORDS);
+
+        for chunk in all_bytes.chunks_exact(2) {
+            let value = u16::from_be_bytes([chunk[0], chunk[1]]);
+            words.push(value.to_quint());
+        }
+
+        let mut joined = words.join("-");
+        let result = write!(f, "{}", joined);
+
+        joined.zeroize();
+        for w in &mut words {
+            w.zeroize();
+        }
+
+        result
+    }
+}
 
 #[derive(Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 pub struct TatuKey {
@@ -47,7 +127,7 @@ impl TatuKey {
             let key = Self::load(path)?;
             Ok((key, None))
         } else if let Some(phrase_vec) = phrase {
-            let key = Self::recover(phrase_vec)?;
+            let key = Self::recover(phrase_vec);
             key.save(path)?;
             Ok((key, None))
         } else {
@@ -58,15 +138,14 @@ impl TatuKey {
     }
 
     pub fn generate(mut rng: impl rand::CryptoRng + rand::RngCore) -> (Self, RecoveryPhrase) {
-        let mut recovery_seed = [0u8; 16];
-        rng.fill_bytes(&mut recovery_seed);
+        let mut entropy = [0u8; 16];
+        rng.fill_bytes(&mut entropy);
 
-        let hash = Blake2s256::digest(recovery_seed);
-        let mut seed = [0u8; 32];
-        seed.copy_from_slice(&hash);
+        let expanded = Blake2s256::digest(entropy).into();
+        let phrase = RecoveryPhrase::from_entropy(entropy);
 
-        let phrase = recovery_enc(&recovery_seed);
-        (Self { seed }, phrase)
+        entropy.zeroize();
+        (Self { seed: expanded }, phrase)
     }
 
     pub fn load(path: &Path) -> Result<Self, KeyError> {
@@ -95,14 +174,11 @@ impl TatuKey {
         Ok(())
     }
 
-    pub fn recover(phrase: &RecoveryPhrase) -> Result<Self, RecoveryError> {
-        let recovery_seed = recovery_dec(phrase)?;
-
-        let hash = Blake2s256::digest(recovery_seed);
-        let mut seed = [0u8; 32];
-        seed.copy_from_slice(&hash);
-
-        Ok(Self { seed })
+    pub fn recover(phrase: &RecoveryPhrase) -> Self {
+        let expanded = Blake2s256::digest(phrase.to_entropy());
+        Self {
+            seed: expanded.into(),
+        }
     }
 }
 
@@ -212,61 +288,6 @@ pub enum RecoveryError {
     RsError(String),
 }
 
-fn recovery_enc(seed: &[u8; 16]) -> RecoveryPhrase {
-    use reed_solomon::Encoder;
-    use std::ops::Deref;
-
-    let enc = Encoder::new(ECC_BYTES);
-    let encoded = enc.encode(seed);
-
-    let all_bytes: &[u8] = encoded.deref();
-    let mut proquints = Vec::with_capacity(RECOVERY_WORDS);
-
-    for chunk in all_bytes.chunks_exact(2) {
-        let value = u16::from_be_bytes([chunk[0], chunk[1]]);
-        proquints.push(value.to_quint());
-    }
-
-    proquints.try_into().unwrap()
-}
-
-fn recovery_dec(phrase: &RecoveryPhrase) -> Result<[u8; 16], RecoveryError> {
-    use reed_solomon::Decoder;
-
-    let mut encoded_bytes = Vec::with_capacity(20);
-    for (i, pq) in phrase.iter().enumerate() {
-        let value = match u16::from_quint(pq) {
-            Ok(v) => v,
-            Err(_) => {
-                tracing::warn!(
-                    "Invalid proquint at position {}: '{}', treating as 0x0000",
-                    i,
-                    pq
-                );
-                0
-            }
-        };
-        let bytes = value.to_be_bytes();
-        encoded_bytes.push(bytes[0]);
-        encoded_bytes.push(bytes[1]);
-    }
-
-    let dec = Decoder::new(ECC_BYTES);
-    let (corrected, num_errors) = dec
-        .correct_err_count(&encoded_bytes, None)
-        .map_err(|_| RecoveryError::TooManyErrors)?;
-
-    if num_errors > 0 {
-        tracing::info!("Corrected {} bytes in recovery phrase", num_errors);
-    }
-
-    let data = corrected.data();
-    let mut seed = [0u8; 16];
-    seed.copy_from_slice(&data[..16]);
-
-    Ok(seed)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -290,9 +311,13 @@ mod tests {
     #[test]
     fn recovery_roundtrip() {
         let (key1, phrase) = TatuKey::generate(rand::rngs::OsRng);
-        println!("Recovery phrase: {}", phrase.join("-"));
+        let phrase_str = phrase.to_string();
+        println!("Recovery phrase: {}", phrase_str);
 
-        let key2 = TatuKey::recover(&phrase).unwrap();
+        let (parsed, corrections) = RecoveryPhrase::parse(&phrase_str).unwrap();
+        assert_eq!(corrections, 0);
+
+        let key2 = TatuKey::recover(&parsed);
 
         assert_eq!(key1.ed_pub().as_bytes(), key2.ed_pub().as_bytes());
         assert_eq!(key1.x_pub().as_bytes(), key2.x_pub().as_bytes());
@@ -301,7 +326,9 @@ mod tests {
     #[test]
     fn recovery_ecc() {
         let mut rng = rand::rngs::OsRng;
-        let (_, mut phrase) = TatuKey::generate(rand::rngs::OsRng);
+        let (_, phrase) = TatuKey::generate(rand::rngs::OsRng);
+
+        let mut words: Vec<String> = phrase.to_string().split('-').map(String::from).collect();
 
         let max_proquints = ECC_BYTES / 4;
         let data_words = RECOVERY_WORDS - (ECC_BYTES / 2);
@@ -311,22 +338,34 @@ mod tests {
             let i = rng.gen_range(0..data_words);
             if corrupted.insert(i) {
                 let random_value = rng.gen_range(0..=u16::MAX);
-                phrase[i] = random_value.to_quint();
+                words[i] = random_value.to_quint();
             }
         }
 
-        assert!(TatuKey::recover(&phrase).is_ok());
+        let corrupted_str = words.join("-");
+        let (recovered, corrections) = RecoveryPhrase::parse(&corrupted_str).unwrap();
+        assert!(corrections > 0);
+
+        let key_original = TatuKey::recover(&phrase);
+        let key_recovered = TatuKey::recover(&recovered);
+        assert_eq!(
+            key_original.ed_pub().as_bytes(),
+            key_recovered.ed_pub().as_bytes()
+        );
     }
 
     #[test]
     fn recovery_too_many_errors() {
-        let (_, mut phrase) = TatuKey::generate(rand::rngs::OsRng);
+        let (_, phrase) = TatuKey::generate(rand::rngs::OsRng);
+
+        let mut words: Vec<String> = phrase.to_string().split('-').map(String::from).collect();
 
         let too_many = (ECC_BYTES / 4) + 1;
         for i in 0..too_many {
-            phrase[i] = "babab".to_string();
+            words[i] = "babab".to_string();
         }
 
-        assert!(TatuKey::recover(&phrase).is_err());
+        let corrupted_str = words.join("-");
+        assert!(RecoveryPhrase::parse(&corrupted_str).is_err());
     }
 }
