@@ -80,30 +80,22 @@ impl Runtime {
     fn load(args: &Args) -> anyhow::Result<Self> {
         let (key_path, handles_path, known_servers_path) = resolve_paths(args);
 
-        let recovery_phrase_input = if args.recover {
-            if key_path.exists() {
-                anyhow::bail!(
-                    "Cannot recover: key file already exists at {}",
-                    key_path.display()
-                );
-            }
+        let recovery_phrase = if args.recover {
             Some(recovery_prompt()?)
         } else {
             None
         };
 
         let (identity, recovery_phrase) =
-            TatuKey::load_or_generate(&key_path, recovery_phrase_input.as_ref())?;
+            TatuKey::load_or_generate(&key_path, recovery_phrase.as_ref())?;
 
         if let Some(phrase) = &recovery_phrase {
             tracing::warn!("New identity created. Recovery phrase:");
-            for (i, chunk) in phrase.chunks(4).enumerate() {
-                let start = i * 4;
-                let end = start + chunk.len() - 1;
-                eprintln!("  {}-{}: {}", start, end, chunk.join(" "));
-            }
+            eprintln!("{}", phrase);
             eprintln!();
-            eprintln!("Without this phrase, you won't be able to recover your account on a new device.");
+            eprintln!(
+                "Without this phrase, you won't be able to recover your account on a new device."
+            );
             eprintln!("This will only be shown again in-game after your first connection.");
             eprintln!();
         }
@@ -184,19 +176,10 @@ fn recovery_prompt() -> anyhow::Result<RecoveryPhrase> {
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
 
-    let words: Vec<String> = input
-        .trim()
-        .split_whitespace()
-        .map(|s| s.to_lowercase())
-        .collect();
-
-    if words.len() != 12 {
-        anyhow::bail!("Expected 12 words, got {}", words.len());
+    let (phrase, errors) = RecoveryPhrase::parse(&input)?;
+    if errors > 0 {
+        tracing::warn!("Corrected {} errors.", errors);
     }
-
-    let phrase: RecoveryPhrase = words
-        .try_into()
-        .map_err(|_| anyhow::anyhow!("Failed to convert to recovery phrase"))?;
 
     Ok(phrase)
 }
@@ -309,34 +292,35 @@ tatu-servers.pin",
 
     tracing::info!("Connected to proxy server");
 
+    if let Some(phrase) = &rt.recovery_phrase {
+        // NOTE: Minecraft logs chat messages, but not server disconnect messages
+
+        send_disconnect(
+            mc_conn,
+            &format!(
+                "§aNew identity created!
+
+                §6Write down your recovery phrase NOW:
+                §f{}
+
+                §7Without this phrase, you won't be able to
+                recover your account on a new device.
+
+                §aReconnect when you've saved it.",
+                phrase
+            ),
+        )
+        .await?;
+        return Ok(());
+    }
+
     let (mc_conn, secure_pipe) = await_play(mc_conn, secure_pipe).await?;
     let (mc_read, mut mc_write) = mc_conn;
 
     if let Some(message) = tofu_message
         && let Err(e) = send_message(&mut mc_write, &message).await
     {
-        tracing::warn!("Failed to inject chat message: {e}");
-    }
-
-    if let Some(phrase) = &rt.recovery_phrase {
-        let mut lines = vec![
-            "§atatu: new identity created".to_string(),
-            "§6tatu: write down your recovery phrase §cNOW§6 (it will be shown only once):"
-                .to_string(),
-        ];
-
-        for (i, chunk) in phrase.chunks(4).enumerate() {
-            let start = i * 4;
-            let end = start + chunk.len() - 1;
-            lines.push(format!("§e{}-{}: {}", start, end, chunk.join("-")));
-        }
-
-        lines.push("§7tatu: without this phrase, you won't be able to recover your account on a new device".to_string());
-
-        let key_message = lines.join("\n");
-        if let Err(e) = send_message(&mut mc_write, &key_message).await {
-            tracing::warn!("Failed to send recovery phrase: {e}");
-        }
+        tracing::warn!("Failed to show fingerprint: {e}");
     }
 
     let result = forward_messages((mc_read, mc_write), secure_pipe).await;
