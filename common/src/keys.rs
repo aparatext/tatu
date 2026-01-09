@@ -11,6 +11,183 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 use base58::{FromBase58, ToBase58};
 use proquint::Quintable;
 
+#[derive(Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
+pub struct TatuKey {
+    #[serde(with = "serde_bytes")]
+    seed: [u8; 32],
+}
+
+impl TatuKey {
+    pub fn ed_pub(&self) -> VerifyingKey {
+        self.ed_key().verifying_key()
+    }
+
+    pub fn ed_key(&self) -> SigningKey {
+        SigningKey::from_bytes(&self.seed)
+    }
+
+    pub fn x_pub(&self) -> PublicKey {
+        PublicKey::from(&self.x_key())
+    }
+
+    pub fn x_key(&self) -> StaticSecret {
+        StaticSecret::from(self.ed_key().to_scalar_bytes())
+    }
+
+    pub fn generate(mut rng: impl rand::CryptoRng + rand::RngCore) -> (Self, RecoveryPhrase) {
+        let mut entropy = [0u8; 16];
+        rng.fill_bytes(&mut entropy);
+
+        let expanded = Blake2s256::digest(entropy).into();
+        let phrase = RecoveryPhrase::from_entropy(entropy);
+
+        entropy.zeroize();
+        (Self { seed: expanded }, phrase)
+    }
+
+    pub fn recover(phrase: &RecoveryPhrase) -> Self {
+        let expanded = Blake2s256::digest(phrase.to_entropy());
+        Self {
+            seed: expanded.into(),
+        }
+    }
+
+    pub fn load_or_generate(
+        path: &Path,
+        phrase: Option<&RecoveryPhrase>,
+    ) -> Result<(Self, Option<RecoveryPhrase>), KeyError> {
+        match (path.exists(), phrase) {
+            (true, None) => {
+                let key = Self::load(path)?;
+                Ok((key, None))
+            }
+            (true, Some(_)) => Err(KeyError::Recovery(RecoveryError::KeyExists(
+                path.display().to_string(),
+            ))),
+            (false, Some(phrase)) => {
+                let key = Self::recover(phrase);
+                key.save(path)?;
+                Ok((key, None))
+            }
+            (false, None) => {
+                let (key, recovery_phrase) = Self::generate(rand::rngs::OsRng);
+                key.save(path)?;
+                Ok((key, Some(recovery_phrase)))
+            }
+        }
+    }
+
+    pub fn load(path: &Path) -> Result<Self, KeyError> {
+        ensure_world_safe(path)?;
+        let bytes = fs::read(path)?;
+
+        let seed: [u8; 32] = bytes
+            .try_into()
+            .map_err(|v: Vec<u8>| KeyError::InvalidLength(v.len()))?;
+
+        Ok(Self { seed })
+    }
+    pub fn save(&self, path: &Path) -> Result<(), KeyError> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        fs::write(path, self.seed)?;
+        set_world_safe(path)?;
+
+        Ok(())
+    }
+}
+
+impl std::fmt::Display for TatuKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.x_pub().as_bytes().to_base58())
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum KeyError {
+    #[error("Key file has world-accessible permissions (mode: {0:o}). To fix: chmod 600 your.key")]
+    WorldAccessible(u32),
+    #[error("Recovery phrase error: {0}")]
+    Recovery(#[from] RecoveryError),
+    #[error("Invalid key length: expected 32 bytes, got {0}")]
+    InvalidLength(usize),
+    #[error("Invalid base58 encoding: {0}")]
+    InvalidBase58(String),
+    #[error("IO error: {0}")]
+    Io(#[from] io::Error),
+}
+
+fn ensure_world_safe(path: &Path) -> Result<(), KeyError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let metadata = fs::metadata(path)?;
+        let mode = metadata.permissions().mode();
+
+        if mode & 0o004 != 0 {
+            return Err(KeyError::WorldAccessible(mode));
+        }
+    }
+
+    Ok(())
+}
+
+fn set_world_safe(path: &Path) -> Result<(), io::Error> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(path)?.permissions();
+        perms.set_mode(0o600);
+        fs::set_permissions(path, perms)?;
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct RemoteTatuKey(PublicKey);
+
+impl RemoteTatuKey {
+    pub fn x_pub(&self) -> &PublicKey {
+        &self.0
+    }
+
+    pub fn from_x_pub(key: PublicKey) -> Self {
+        Self(key)
+    }
+
+    pub fn from_ed_pub(ed_pub: &VerifyingKey) -> Self {
+        Self(PublicKey::from(ed_pub.to_montgomery().to_bytes()))
+    }
+
+    pub fn from_base58(s: &str) -> Result<Self, KeyError> {
+        s.from_base58()
+            .map_err(|e| KeyError::InvalidBase58(format!("{:?}", e)))?
+            .try_into()
+            .map(|bytes: [u8; 32]| Self(x25519::PublicKey::from(bytes)))
+            .map_err(|_| KeyError::InvalidLength(32))
+    }
+}
+
+impl std::fmt::Display for RemoteTatuKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0.as_bytes().to_base58())
+    }
+}
+
+impl PartialEq<TatuKey> for RemoteTatuKey {
+    fn eq(&self, other: &TatuKey) -> bool {
+        self.0.as_bytes() == other.x_pub().as_bytes()
+    }
+}
+
+impl PartialEq<RemoteTatuKey> for TatuKey {
+    fn eq(&self, other: &RemoteTatuKey) -> bool {
+        self.x_pub().as_bytes() == other.0.as_bytes()
+    }
+}
+
 const RECOVERY_WORDS: usize = 12;
 const ECC_BYTES: usize = (RECOVERY_WORDS * 2) - 16;
 
@@ -96,188 +273,10 @@ impl fmt::Display for RecoveryPhrase {
     }
 }
 
-#[derive(Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
-pub struct TatuKey {
-    #[serde(with = "serde_bytes")]
-    seed: [u8; 32],
-}
-
-impl TatuKey {
-    pub fn ed_pub(&self) -> VerifyingKey {
-        self.ed_key().verifying_key()
-    }
-
-    pub fn ed_key(&self) -> SigningKey {
-        SigningKey::from_bytes(&self.seed)
-    }
-
-    pub fn x_pub(&self) -> PublicKey {
-        PublicKey::from(&self.x_key())
-    }
-
-    pub fn x_key(&self) -> StaticSecret {
-        StaticSecret::from(self.ed_key().to_scalar_bytes())
-    }
-
-    pub fn load_or_generate(
-        path: &Path,
-        phrase: Option<&RecoveryPhrase>,
-    ) -> Result<(Self, Option<RecoveryPhrase>), KeyError> {
-        if path.exists() {
-            let key = Self::load(path)?;
-            Ok((key, None))
-        } else if let Some(phrase_vec) = phrase {
-            let key = Self::recover(phrase_vec);
-            key.save(path)?;
-            Ok((key, None))
-        } else {
-            let (key, phrase_vec) = Self::generate(rand::rngs::OsRng);
-            key.save(path)?;
-            Ok((key, Some(phrase_vec)))
-        }
-    }
-
-    pub fn generate(mut rng: impl rand::CryptoRng + rand::RngCore) -> (Self, RecoveryPhrase) {
-        let mut entropy = [0u8; 16];
-        rng.fill_bytes(&mut entropy);
-
-        let expanded = Blake2s256::digest(entropy).into();
-        let phrase = RecoveryPhrase::from_entropy(entropy);
-
-        entropy.zeroize();
-        (Self { seed: expanded }, phrase)
-    }
-
-    pub fn load(path: &Path) -> Result<Self, KeyError> {
-        check_permissions(path)?;
-        let bytes = fs::read(path)?;
-        let seed: [u8; 32] = bytes
-            .try_into()
-            .map_err(|v: Vec<u8>| KeyError::InvalidLength(v.len()))?;
-        Ok(Self { seed })
-    }
-
-    pub fn save(&self, path: &Path) -> Result<(), KeyError> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(path, self.seed)?;
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(path)?.permissions();
-            perms.set_mode(0o600);
-            fs::set_permissions(path, perms)?;
-        }
-
-        Ok(())
-    }
-
-    pub fn recover(phrase: &RecoveryPhrase) -> Self {
-        let expanded = Blake2s256::digest(phrase.to_entropy());
-        Self {
-            seed: expanded.into(),
-        }
-    }
-}
-
-impl std::fmt::Display for TatuKey {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.x_pub().as_bytes().to_base58())
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub struct RemoteTatuKey(PublicKey);
-
-impl RemoteTatuKey {
-    pub fn from_x_pub(key: PublicKey) -> Self {
-        Self(key)
-    }
-
-    pub fn from_ed_pub(ed_pub: &VerifyingKey) -> Self {
-        Self(PublicKey::from(ed_pub.to_montgomery().to_bytes()))
-    }
-
-    pub fn x_pub(&self) -> &PublicKey {
-        &self.0
-    }
-
-    pub fn from_base58(s: &str) -> Result<Self, KeyError> {
-        let bytes = s
-            .from_base58()
-            .map_err(|e| KeyError::InvalidBase58(format!("{:?}", e)))?;
-
-        if bytes.len() != 32 {
-            return Err(KeyError::InvalidLength(bytes.len()));
-        }
-
-        let mut key_bytes = [0u8; 32];
-        key_bytes.copy_from_slice(&bytes);
-
-        Ok(Self(x25519::PublicKey::from(key_bytes)))
-    }
-}
-
-impl std::fmt::Display for RemoteTatuKey {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0.as_bytes().to_base58())
-    }
-}
-
-impl PartialEq<TatuKey> for RemoteTatuKey {
-    fn eq(&self, other: &TatuKey) -> bool {
-        self.0.as_bytes() == other.x_pub().as_bytes()
-    }
-}
-
-impl PartialEq<RemoteTatuKey> for TatuKey {
-    fn eq(&self, other: &RemoteTatuKey) -> bool {
-        self.x_pub().as_bytes() == other.0.as_bytes()
-    }
-}
-
-#[derive(Debug, Error)]
-pub enum KeyError {
-    #[error("Key file has world-accessible permissions (mode: {0:o}). To fix: chmod 600 your.key")]
-    WorldAccessible(u32),
-    #[error("Invalid key length: expected 32 bytes, got {0}")]
-    InvalidLength(usize),
-    #[error("Invalid base58 encoding: {0}")]
-    InvalidBase58(String),
-    #[error("Recovery phrase error: {0}")]
-    Recovery(#[from] RecoveryError),
-    #[error("IO error: {0}")]
-    Io(#[from] io::Error),
-}
-
-impl From<KeyError> for io::Error {
-    fn from(e: KeyError) -> Self {
-        match e {
-            KeyError::Io(io_err) => io_err,
-            other => io::Error::new(io::ErrorKind::InvalidData, other),
-        }
-    }
-}
-
-fn check_permissions(path: &Path) -> Result<(), KeyError> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let metadata = fs::metadata(path)?;
-        let mode = metadata.permissions().mode();
-
-        if mode & 0o004 != 0 {
-            return Err(KeyError::WorldAccessible(mode));
-        }
-    }
-
-    Ok(())
-}
-
 #[derive(Debug, Error)]
 pub enum RecoveryError {
+    #[error("Recovery phrase provided but keyfile already exists at {0}")]
+    KeyExists(String),
     #[error("Invalid recovery phrase format (expected {RECOVERY_WORDS} proquints)")]
     InvalidFormat,
     #[error("Invalid proquint: {0}")]
