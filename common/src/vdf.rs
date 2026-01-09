@@ -1,4 +1,4 @@
-use blake2::{Blake2b512, Digest};
+use blake2::{Blake2s256, Digest};
 use once_cell::sync::Lazy;
 use rug::Integer;
 use rug::integer::Order::MsfBe;
@@ -19,7 +19,8 @@ static N_HALF: Lazy<Integer> = Lazy::new(|| N.clone() / 2);
 const T: u32 = 1 << (if !cfg!(debug_assertions) { 24 } else { 21 });
 static TWO_TO_T: Lazy<Integer> = Lazy::new(|| Integer::from(Integer::u_pow_u(2, T)));
 
-/// Wesolowski, "Efficient Verifiable Delay Functions"
+// Wesolowski, "Efficient Verifiable Delay Functions"
+//
 // See https://reading.supply/@whyrusleeping/a-vdf-explainer-5S6Ect
 // and https://eprint.iacr.org/2018/623.pdf
 
@@ -73,7 +74,7 @@ fn quotient_group(x: Integer) -> Integer {
 }
 
 fn hash_group(seed: &[u8]) -> Integer {
-    let digest = Blake2b512::digest(seed);
+    let digest = Blake2s256::digest(seed);
     let h = Integer::from_digits(&digest, MsfBe);
     let x = h % (N.clone() - 1) + 1;
     quotient_group(x)
@@ -81,7 +82,7 @@ fn hash_group(seed: &[u8]) -> Integer {
 
 // Fiat-Shamir challenge, must be prime to resist root-finding attacks
 fn hash_prime(g: &Integer, y: &Integer) -> Integer {
-    let mut hasher = Blake2b512::new();
+    let mut hasher = Blake2s256::new();
     hasher.update(g.to_digits::<u8>(MsfBe));
     hasher.update(y.to_digits::<u8>(MsfBe));
     let h = Integer::from_digits(&hasher.finalize(), MsfBe);

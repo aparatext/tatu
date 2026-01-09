@@ -2,7 +2,7 @@ use crate::keys::RemoteTatuKey;
 use crate::vdf;
 use anyhow::anyhow;
 use blake2::{
-    Blake2b, Digest,
+    Blake2s, Digest,
     digest::consts::{U4, U16},
 };
 use serde::{Deserialize, Serialize};
@@ -16,7 +16,7 @@ pub struct Persona {
 
 impl Persona {
     pub fn uuid(&self) -> Uuid {
-        Uuid::from_bytes(Blake2b::<U16>::digest(self.key.to_bytes()).into())
+        Uuid::from_bytes(Blake2s::<U16>::digest(self.key.to_bytes()).into())
     }
 
     pub fn auth(
@@ -48,7 +48,7 @@ impl std::fmt::Display for Handle {
 
 impl Handle {
     pub fn from(nick: String, seed: Vec<u8>) -> Self {
-        let disc_bytes = Blake2b::<U4>::digest(&seed);
+        let disc_bytes = Blake2s::<U4>::digest(&seed);
         let disc_u32 = u32::from_be_bytes(disc_bytes.into());
 
         let discriminator = Self::discriminator(disc_u32);
