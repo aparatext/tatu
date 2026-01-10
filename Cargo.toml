@@ -16,7 +16,7 @@ tokio-util = { version = "0.7", features = ["codec"] }
 futures = "0.3"
 bytes = "1.11"
 
-azalea = { git = "https://github.com/azalea-rs/azalea/", version = "0.14", default-features = false }
+azalea = { git = "https://github.com/azalea-rs/azalea/", version = "0.15", default-features = false }
 rmp-serde = "1.3"
 
 anyhow = "1.0"
