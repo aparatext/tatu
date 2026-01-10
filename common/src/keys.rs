@@ -217,6 +217,7 @@ impl RecoveryPhrase {
         }
 
         let mut encoded_bytes = Vec::with_capacity(RECOVERY_WORDS * 2);
+        let mut invalid_words = 0;
         for (i, pq) in words.iter().enumerate() {
             let value = match u16::from_quint(pq) {
                 Ok(v) => v,
@@ -226,12 +227,18 @@ impl RecoveryPhrase {
                         i,
                         pq
                     );
+                    invalid_words += 1;
                     0
                 }
             };
             let bytes = value.to_be_bytes();
             encoded_bytes.push(bytes[0]);
             encoded_bytes.push(bytes[1]);
+        }
+
+        // Fail if too many invalid proquints (each is 2 bytes, we can correct ECC_BYTES/2)
+        if invalid_words > ECC_BYTES / 4 {
+            return Err(RecoveryError::TooManyErrors);
         }
 
         let dec = reed_solomon::Decoder::new(ECC_BYTES);
