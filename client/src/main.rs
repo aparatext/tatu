@@ -1,20 +1,25 @@
 mod keychain;
 
+use bytes::Bytes;
+use clap::Parser;
+use futures::{SinkExt, StreamExt};
+use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::net::{TcpListener, TcpStream};
+
 use azalea::protocol::{
     self,
     packets::{game::ClientboundGamePacket, handshake::ServerboundHandshakePacket},
     read::ReadPacketError,
     write::serialize_packet,
 };
-use bytes::Bytes;
-use clap::Parser;
-use futures::{SinkExt, StreamExt};
+
 use keychain::Keychain;
-use std::path::PathBuf;
-use std::sync::Arc;
-use tatu_common::keys::{RecoveryPhrase, RemoteTatuKey, TatuKey};
-use tatu_common::noise::NoisePipe;
-use tokio::net::{TcpListener, TcpStream};
+use tatu_common::{
+    keys::{RecoveryPhrase, RemoteTatuKey, TatuKey},
+    model::AuthMessage,
+    noise::NoisePipe,
+};
 
 type MCReadWriteConn = (
     azalea::protocol::connect::RawReadConnection,
@@ -130,6 +135,9 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let listener = TcpListener::bind(&args.listen_addr).await?;
     let runtime = Arc::new(Runtime::load(&args)?);
+
+    let uuid = RemoteTatuKey::from_x_pub(runtime.keychain.identity.x_pub()).uuid();
+    tracing::info!("Your Minecraft UUID: {}", uuid.as_hyphenated());
 
     tracing::info!(
         "Client proxy listening on {}, forwarding to {}",
@@ -278,7 +286,7 @@ tatu-servers.pin",
         }
     };
 
-    let auth_msg = tatu_common::model::AuthMessage {
+    let auth_msg = AuthMessage {
         handle_claim,
         skin: rt.skin.as_deref().map(String::from),
     };

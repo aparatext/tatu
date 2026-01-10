@@ -3,6 +3,7 @@ use std::fmt;
 use std::{fs, io, path::Path};
 use thiserror::Error;
 
+use blake2::{Blake2s, digest::consts::U16};
 use blake2::{Blake2s256, Digest};
 use ed25519::{SigningKey, VerifyingKey};
 use x25519::{PublicKey, StaticSecret};
@@ -10,6 +11,7 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use base58::{FromBase58, ToBase58};
 use proquint::Quintable;
+use uuid::Uuid;
 
 #[derive(Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 pub struct TatuKey {
@@ -167,6 +169,10 @@ impl RemoteTatuKey {
             .try_into()
             .map(|bytes: [u8; 32]| Self(x25519::PublicKey::from(bytes)))
             .map_err(|_| KeyError::InvalidLength(32))
+    }
+
+    pub fn uuid(&self) -> Uuid {
+        Uuid::from_bytes(Blake2s::<U16>::digest(self.x_pub()).into())
     }
 }
 

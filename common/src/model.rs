@@ -1,10 +1,7 @@
 use crate::keys::RemoteTatuKey;
 use crate::vdf;
 use anyhow::anyhow;
-use blake2::{
-    Blake2s, Digest,
-    digest::consts::{U4, U16},
-};
+use blake2::{Blake2s, Digest, digest::consts::U4};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -15,10 +12,6 @@ pub struct Persona {
 }
 
 impl Persona {
-    pub fn uuid(&self) -> Uuid {
-        Uuid::from_bytes(Blake2s::<U16>::digest(self.key.to_bytes()).into())
-    }
-
     pub fn auth(
         key: x25519::PublicKey,
         claim: HandleClaim,
@@ -26,6 +19,10 @@ impl Persona {
     ) -> anyhow::Result<Self> {
         let handle = claim.verify(&key)?;
         Ok(Persona { key, handle, skin })
+    }
+
+    pub fn uuid(&self) -> Uuid {
+        RemoteTatuKey::from_x_pub(self.key).uuid()
     }
 }
 
