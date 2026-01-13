@@ -172,7 +172,8 @@ impl RemoteTatuKey {
     }
 
     pub fn uuid(&self) -> Uuid {
-        Uuid::from_bytes(Blake2s::<U16>::digest(self.x_pub()).into())
+        let hash = Blake2s::<U16>::digest(self.x_pub()).into();
+        uuid::Builder::from_custom_bytes(hash).into_uuid()
     }
 }
 
