@@ -7,6 +7,9 @@ use tatu_common::model::Persona;
 use tatu_common::noise::NoisePipe;
 use tokio::net::{TcpListener, TcpStream};
 use uuid::Uuid;
+use shadow_rs::shadow;
+
+shadow!(build);
 
 #[derive(Parser)]
 #[command(about = "Tatu server proxy")]
@@ -56,6 +59,12 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::DEBUG)
         .init();
+
+    tracing::info!("tatu v{} ({}/{}{})",
+                   build::PKG_VERSION,
+                   build::BRANCH,
+                   build::SHORT_COMMIT,
+                   if build::GIT_CLEAN { "" } else { "-dirty" });
 
     let (listen_addr, runtime) = Runtime::load(Args::parse())?;
     let runtime = Arc::new(runtime);

@@ -6,6 +6,7 @@ use futures::{SinkExt, StreamExt};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
+use shadow_rs::shadow;
 
 use azalea::protocol::{
     self,
@@ -20,6 +21,9 @@ use tatu_common::{
     model::AuthMessage,
     noise::NoisePipe,
 };
+
+shadow!(build);
+
 
 type MCReadWriteConn = (
     azalea::protocol::connect::RawReadConnection,
@@ -131,6 +135,12 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::DEBUG)
         .init();
+
+        tracing::info!("tatu v{} ({}/{}{})",
+                       build::PKG_VERSION,
+                       build::BRANCH,
+                       build::SHORT_COMMIT,
+                       if build::GIT_CLEAN { "" } else { "-dirty" });
 
     let args = Args::parse();
     let listener = TcpListener::bind(&args.listen_addr).await?;

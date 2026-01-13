@@ -2,8 +2,10 @@
 name = "tatu-client"
 version = "0.2.0"
 edition = "2024"
+build = "build.rs"
 
 [dependencies]
+shadow-rs = { version = "1.5", default-features = false }
 tatu-common = { path = "../common" }
 
 tokio.workspace = true
@@ -19,3 +21,6 @@ thiserror.workspace = true
 base58.workspace = true
 clap.workspace = true
 dirs = "5.0"
+
+[build-dependencies]
+shadow-rs = "1.5"

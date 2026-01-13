@@ -4,7 +4,6 @@ resolver = "3"
 
 [profile.dev]
 opt-level = 1
-
 # NOTE: Without -O3, slow decrypts create buffer bloat,
 # lag spiking up to 500~2000 ms on chunk loading
 [profile.dev.package."*"]
