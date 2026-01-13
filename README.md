@@ -37,45 +37,42 @@ Servers have their own keyfiles too (but not recovery phrases), so back those up
 When you connect with a nick (set by your launcher in offline mode) for the first time, tatu will _mine_ your handle. This takes around 40 seconds, once per nick, cached and reused across all servers. The delay is intentional and prevents impersonation. Since handles are derived deterministically from your key and nick, your _discriminator_ (the part after #) will stay the same for that nick everywhere, as long as you preserve your key.
 
 
-## TODO
+## Roadmap
 
-<details>
-<summary>1.0 Roadmap...</summary>
+### 0.3: The Network Update
 
-- [x] Identity
-    - [x] Wesolowski VDF
-    - [x] Ed25519-X25519 derivation
-    - [x] Discriminator base
-    - [x] Keyfiles
-    - [x] Recovery phrases
-- [x] Noise Pipe
-    - [x] Server TOFU + fingerprints
-- [x] MessagePack wire
-- [x] BungeeCord forwarding, Minecraft login rewriting
-    - [x] Skins
-    - [x] Disconnect message injection
-    - [x] Server key indication in chat
-    - [ ] Older Minecraft Protocol versions
-      - [ ] 1.8 & 1.12
-      - [ ] (?) 1.13 - 1.17
-      - [ ] 1.18
-      - [ ] 1.19
-    - [x] Server ping responses
-      - [ ] Forward actual ping data
-    - [ ] Preserve FML handshake
-    - [ ] Velocity forwarding
-- [ ] Specify v1 protocol
+  - [ ] (0.3.0) Take Minecraft Protocol in-house
+    - [ ] (0.3.1) Legacy Minecraft versions (1.8, 1.12, 1.18, 1.19)
+  - [ ] Preserve FML handshake
+  - [ ] Server Ping forwarding
+  - [ ] Rewrite NoisePipe
+  
+### 0.4: The Housekeeping Update
+
+  - [ ] Rebrand tatu-common to tatu-lib
+    - [ ] Remove anyhow from common
+    - [ ] Remove all `unwrap()`
+  - [ ] tracing integration in game chat
+  - [ ] CONTRIBUTING.md
+
+### 1.0: The Foundational Update
+
+  - [ ] PROTOCOL.md
     - [ ] Versioning, magic
-- [ ] tracing game chat integration
+    - [ ] Compatibility guarantees
+  - [ ] SECURITY.md
+  - [ ] Call for comments
 
-*Future work*
-- [ ] SOCKS5 interface for in-game server selection
-- [ ] Fast Noise_KK handshake with known server key
-  - [ ] Client key pinning (proof caching)
-- [ ] Server-initiated VDF challenges for spam/afk prevention?
-- [ ] Broadcast peer keys w/ transparency for third-party integrations like voice chat?
-- [ ] Stream management & 1RTT session resumption?
-</details>
+### The Backlog
+
+  - [ ] SOCKS5 interface for in-game server selection
+  - [ ] Velocity forwarding
+  - [ ] Server-initiated challenges for moderation
+  - [ ] Handle proof caching
+    - [ ] Fast Noise_KK handshake
+      - [ ] 1-RTT session resumption?
+  - [ ] Key succession?
+  - [ ] Transparent peer key broadcast; enables possible e2ee voice chat integration, chat signing (incompatible with Minecraft's RSA-based SecureChat)
 
 
 ## Getting started
