@@ -116,7 +116,7 @@ impl Keychain {
         let claim = match rmp_serde::from_slice::<HandleClaim>(&data) {
             Ok(claim) => claim,
             Err(e) => {
-                tracing::warn!("Corrupt handle cache for '{}': {}, will remine", nick, e);
+                tracing::warn!(nick = %nick, error = %e, "corrupt handle claim, remining");
                 let _ = fs::remove_file(&file_path);
                 return Err(LoadHandleError::NeedsMining);
             }
@@ -124,11 +124,7 @@ impl Keychain {
 
         let public_key = self.identity.x_pub();
         if let Err(e) = claim.verify(&public_key) {
-            tracing::warn!(
-                "Handle claim for '{}' failed verification: {}, will remine",
-                nick,
-                e
-            );
+            tracing::warn!(nick = %nick, error = %e, "handle claim invalid. remining...");
             let _ = fs::remove_file(&file_path);
             return Err(LoadHandleError::NeedsMining);
         }
@@ -159,19 +155,14 @@ impl Keychain {
             let nick_clone = nick.to_string();
 
             tokio::task::spawn_blocking(move || {
-                match keychain.mine_handle(&nick_clone) {
-                    Ok(_) => {
-                        tracing::info!("Handle successfully mined for '{}'", nick_clone);
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to mine handle for '{}': {}", nick_clone, e);
-                        // Remove the cell so next connection can retry
-                        let handle = tokio::runtime::Handle::current();
-                        handle.block_on(async {
-                            let mut cells = keychain.mining_cells.lock().await;
-                            cells.remove(&nick_clone);
-                        });
-                    }
+                if let Err(e) = keychain.mine_handle(&nick_clone) {
+                    tracing::error!("Failed to mine handle for '{}': {}", nick_clone, e);
+                    // Remove the cell so next connection can retry
+                    let handle = tokio::runtime::Handle::current();
+                    handle.block_on(async {
+                        let mut cells = keychain.mining_cells.lock().await;
+                        cells.remove(&nick_clone);
+                    });
                 }
             });
         }
@@ -180,7 +171,8 @@ impl Keychain {
     }
 
     pub fn mine_handle(&self, nick: &str) -> io::Result<HandleClaim> {
-        tracing::info!("Mining new handle claim for '{}'...", nick);
+        tracing::info!(nick = %nick, "mining handle");
+
         let claim = HandleClaim::mine(nick.to_string(), &self.identity.ed_key())
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
 
@@ -190,7 +182,7 @@ impl Keychain {
         fs::create_dir_all(&self.handles_dir)?;
         fs::write(self.handles_dir.join(format!("{}.nick", nick)), data)?;
 
-        tracing::info!("Handle mined and saved for '{}'", nick);
+        tracing::info!(nick = %nick, "handle mined");
         Ok(claim)
     }
 

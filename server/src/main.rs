@@ -1,15 +1,22 @@
 use bytes::Bytes;
 use clap::Parser;
 use futures::{SinkExt, StreamExt};
+use shadow_rs::shadow;
 use std::sync::Arc;
 use tatu_common::keys::TatuKey;
 use tatu_common::model::Persona;
 use tatu_common::noise::NoisePipe;
 use tokio::net::{TcpListener, TcpStream};
 use uuid::Uuid;
-use shadow_rs::shadow;
 
 shadow!(build);
+
+fn print_banner(fields: &[(&str, &dyn std::fmt::Display)]) {
+    for (key, value) in fields {
+        eprintln!("{}: {}", key, value);
+    }
+    eprintln!();
+}
 
 #[derive(Parser)]
 #[command(about = "Tatu server proxy")]
@@ -30,19 +37,17 @@ struct Runtime {
 }
 
 impl Runtime {
-    fn load(args: Args) -> anyhow::Result<(String, Self)> {
-        let (keypair, _) = TatuKey::load_or_generate(&args.key_path, None)?;
+    fn load(args: Args) -> anyhow::Result<(String, Self, bool)> {
+        let (keypair, recovery_phrase) = TatuKey::load_or_generate(&args.key_path, None)?;
         let keypair = Arc::new(keypair);
-
-        tracing::info!("Server key: {}", keypair);
-        tracing::info!("Post this to multiple independent channels for enhanced protection!");
+        let is_new_key = recovery_phrase.is_some();
 
         let runtime = Self {
             backend_addr: args.backend_addr.into(),
             keypair,
         };
 
-        Ok((args.listen_addr, runtime))
+        Ok((args.listen_addr, runtime, is_new_key))
     }
 
     fn backend_port(&self) -> u16 {
@@ -56,24 +61,37 @@ impl Runtime {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let args = Args::parse();
+    let keyfile = args.key_path.display().to_string();
+    let (listen_addr, runtime, is_new_key) = Runtime::load(args)?;
+    let runtime = Arc::new(runtime);
+
+    let version = format!(
+        "server v{} ({}/{}{})",
+        build::PKG_VERSION,
+        build::BRANCH,
+        build::SHORT_COMMIT,
+        if build::GIT_CLEAN { "" } else { "-dirty" }
+    );
+
+    print_banner(&[
+        ("version", &version as &dyn std::fmt::Display),
+        ("listening", &listen_addr),
+        ("backend", &runtime.backend_addr),
+        ("keyfile", &keyfile),
+        ("key", &runtime.keypair),
+    ]);
+
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::DEBUG)
         .init();
 
-    tracing::info!("tatu v{} ({}/{}{})",
-                   build::PKG_VERSION,
-                   build::BRANCH,
-                   build::SHORT_COMMIT,
-                   if build::GIT_CLEAN { "" } else { "-dirty" });
-
-    let (listen_addr, runtime) = Runtime::load(Args::parse())?;
-    let runtime = Arc::new(runtime);
+    if is_new_key {
+        tracing::warn!("new server key generated");
+        tracing::warn!("tip: post this key to multiple independent channels!");
+    }
 
     let listener = TcpListener::bind(&listen_addr).await?;
-    tracing::info!(
-        "Listening on {listen_addr}, backend at {}",
-        runtime.backend_addr
-    );
 
     loop {
         let (stream, addr) = listener.accept().await?;
@@ -94,13 +112,13 @@ async fn handle_connection(
     rt: &Runtime,
 ) -> anyhow::Result<()> {
     let (client, persona, client_handshake) = authenticate_client(stream, &rt.keypair).await?;
-    tracing::info!("{} connected from {}", persona, client_addr.ip());
+    tracing::info!(name = %persona.handle, uuid = %persona.uuid(), ip = %client_addr.ip(), "authed");
 
     let backend_conn = minecraft_login(&persona, client_addr.ip(), &client_handshake, rt).await?;
 
-    tracing::info!("{} joined", persona.handle);
+    tracing::info!(name = %persona.handle, "joined");
     let result = forward_messages(client, backend_conn).await;
-    tracing::info!("{} left", persona.handle);
+    tracing::info!(name = %persona.handle, "left");
 
     result
 }

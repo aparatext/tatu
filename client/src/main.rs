@@ -3,10 +3,10 @@ mod keychain;
 use bytes::Bytes;
 use clap::Parser;
 use futures::{SinkExt, StreamExt};
+use shadow_rs::shadow;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::net::{TcpListener, TcpStream};
-use shadow_rs::shadow;
 
 use azalea::protocol::{
     self,
@@ -24,6 +24,12 @@ use tatu_common::{
 
 shadow!(build);
 
+fn print_banner(fields: &[(&str, &dyn std::fmt::Display)]) {
+    for (key, value) in fields {
+        eprintln!("{}: {}", key, value);
+    }
+    eprintln!();
+}
 
 type MCReadWriteConn = (
     azalea::protocol::connect::RawReadConnection,
@@ -35,7 +41,7 @@ const MAX_NICK_LENGTH: usize = 7;
 #[derive(Parser)]
 #[command(about = "Tatu client proxy")]
 struct Args {
-    proxy_addr: String,
+    dest_addr: String,
 
     #[arg(long, default_value = "127.0.0.1:25565")]
     listen_addr: String,
@@ -57,7 +63,7 @@ struct Args {
 }
 
 struct Runtime {
-    proxy_addr: String,
+    dest_addr: String,
     skin: Option<Arc<str>>,
     keychain: Arc<Keychain>,
     recovery_phrase: Mutex<Option<RecoveryPhrase>>,
@@ -98,17 +104,6 @@ impl Runtime {
         let (identity, recovery_phrase) =
             TatuKey::load_or_generate(&key_path, recovery_phrase.as_ref())?;
 
-        if let Some(phrase) = &recovery_phrase {
-            tracing::warn!("New identity created. Recovery phrase:");
-            eprintln!("{}", phrase);
-            eprintln!();
-            eprintln!(
-                "Without this phrase, you won't be able to recover your account on a new device."
-            );
-            eprintln!("This will only be shown again in-game after your first connection.");
-            eprintln!();
-        }
-
         let identity = Arc::new(identity);
         let keychain = Keychain::new(identity, &handles_path, &known_servers_path)?;
 
@@ -122,7 +117,7 @@ impl Runtime {
             .map(Into::into);
 
         Ok(Self {
-            proxy_addr: args.proxy_addr.clone(),
+            dest_addr: args.dest_addr.clone(),
             skin,
             keychain: Arc::new(keychain),
             recovery_phrase: Mutex::new(recovery_phrase),
@@ -132,28 +127,48 @@ impl Runtime {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let args = Args::parse();
+    let (key_path, _, _) = resolve_paths(&args);
+    let runtime = Runtime::load(&args)?;
+    let runtime = Arc::new(runtime);
+
+    let uuid = RemoteTatuKey::from_x_pub(runtime.keychain.identity.x_pub()).uuid();
+
+    let version = format!(
+        "client v{} ({}/{}{})",
+        build::PKG_VERSION,
+        build::BRANCH,
+        build::SHORT_COMMIT,
+        if build::GIT_CLEAN { "" } else { "-dirty" }
+    );
+
+    print_banner(&[
+        ("version", &version as &dyn std::fmt::Display),
+        ("proxy", &args.listen_addr),
+        ("destination", &runtime.dest_addr),
+        ("keyfile", &key_path.display()),
+        ("uuid", &uuid.as_hyphenated()),
+    ]);
+
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::DEBUG)
         .init();
 
-        tracing::info!("tatu v{} ({}/{}{})",
-                       build::PKG_VERSION,
-                       build::BRANCH,
-                       build::SHORT_COMMIT,
-                       if build::GIT_CLEAN { "" } else { "-dirty" });
+    let recovery_phrase_str = {
+        let phrase_guard = runtime.recovery_phrase.lock().unwrap();
+        phrase_guard.as_ref().map(|p| p.to_string())
+    };
 
-    let args = Args::parse();
+    if let Some(phrase) = recovery_phrase_str {
+        tracing::warn!("new identity generated");
+        tracing::warn!("recovery phrase: {}", phrase);
+        tracing::warn!(
+            "write it down NOW. without it OR your keyfile, you won't be able to recover your identity!"
+        );
+        tracing::warn!("this will only be shown again in-game (unless you restart the program)\n");
+    }
+
     let listener = TcpListener::bind(&args.listen_addr).await?;
-    let runtime = Arc::new(Runtime::load(&args)?);
-
-    let uuid = RemoteTatuKey::from_x_pub(runtime.keychain.identity.x_pub()).uuid();
-    tracing::info!("Your Minecraft UUID: {}", uuid.as_hyphenated());
-
-    tracing::info!(
-        "Client proxy listening on {}, forwarding to {}",
-        args.listen_addr,
-        runtime.proxy_addr
-    );
 
     loop {
         let (stream, _) = listener.accept().await?;
@@ -218,14 +233,14 @@ async fn handle_client(stream: TcpStream, rt: Arc<Runtime>) -> anyhow::Result<()
 
     match intention {
         ClientIntention::Status => {
-            return handle_ping(conn, &rt.proxy_addr).await;
+            return handle_ping(conn, &rt.dest_addr).await;
         }
         ClientIntention::Login => {}
         _ => anyhow::bail!("Unsupported intention type"),
     }
 
     let (mc_conn, nick) = finish_login_handshake(conn).await?;
-    tracing::info!("Connecting as {nick}");
+    tracing::info!(nick = %nick, server = %rt.dest_addr, "connecting");
 
     let phrase = rt.recovery_phrase.lock().unwrap().take();
     if let Some(phrase) = phrase {
@@ -250,7 +265,8 @@ recover your account on a new device.
 This will only be shown once.
 
 §6Reconnect when you're ready.",
-                phrase.to_string()
+                phrase
+                    .to_string()
                     .split('-')
                     .collect::<Vec<_>>()
                     .chunks(6)
@@ -279,7 +295,7 @@ This will only be shown once.
         Err(keychain::LoadHandleError::Io(e)) => return Err(e.into()),
     };
 
-    let tcp_stream = TcpStream::connect(&rt.proxy_addr).await?;
+    let tcp_stream = TcpStream::connect(&rt.dest_addr).await?;
     tcp_stream.set_nodelay(true)?;
 
     let x_key = rt.keychain.identity.x_key();
@@ -288,15 +304,15 @@ This will only be shown once.
     let server_key = RemoteTatuKey::from_x_pub(secure_pipe.remote_public_key()?);
 
     let tofu_message = {
-        match rt.keychain.id_server(&rt.proxy_addr, &server_key) {
+        match rt.keychain.id_server(&rt.dest_addr, &server_key) {
             Ok(()) => {
-                tracing::info!("Server key verified");
+                tracing::info!(server = %rt.dest_addr, key = %server_key, "known");
                 None
             }
             Err(keychain::PinError::NotKnown) => {
-                tracing::warn!("Server not known, pinning key: {server_key}");
-                rt.keychain.pin_server(rt.proxy_addr.clone(), server_key)?;
-                tracing::info!("Verify this key through a trusted channel!");
+                tracing::warn!(server = %rt.dest_addr, key = %server_key, "new server, pinning");
+                rt.keychain.pin_server(rt.dest_addr.clone(), server_key)?;
+                tracing::info!("tip: verify this key through a trusted channel!");
 
                 fn chunked_key(key: String) -> String {
                     key.chars()
@@ -344,7 +360,7 @@ tatu-servers.pin",
     let handshake_bytes = protocol::write::serialize_packet(&handshake)?;
     secure_pipe.send(Bytes::from(handshake_bytes)).await?;
 
-    tracing::info!("Connected to proxy server");
+    tracing::info!("connected");
 
     let (mc_conn, secure_pipe) = await_play(mc_conn, secure_pipe).await?;
     let (mc_read, mut mc_write) = mc_conn;
@@ -356,7 +372,7 @@ tatu-servers.pin",
     }
 
     let result = forward_messages((mc_read, mc_write), secure_pipe).await;
-    tracing::info!("Disconnected");
+    tracing::info!(server = %rt.dest_addr, "disconnected");
 
     result
 }
