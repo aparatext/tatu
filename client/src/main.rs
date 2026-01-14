@@ -317,15 +317,21 @@ tatu-servers.pin",
             mc_conn,
             &format!(
                 "§aNew identity created!
+§6Write down your recovery phrase NOW:
 
-                §6Write down your recovery phrase NOW:
-                §f{}
+§e{}
 
-                §7Without this phrase, you won't be able to
-                recover your account on a new device.
+§7Without this phrase, you won't be able to
+recover your account on a new device.
 
-                §aReconnect when you've saved it.",
-                phrase
+§6Reconnect when you've saved it.",
+                phrase.to_string()
+                    .split('-')
+                    .collect::<Vec<_>>()
+                    .chunks(6)
+                    .map(|chunk| chunk.join("-"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
             ),
         )
         .await?;
