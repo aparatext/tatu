@@ -4,7 +4,7 @@ use bytes::Bytes;
 use clap::Parser;
 use futures::{SinkExt, StreamExt};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::net::{TcpListener, TcpStream};
 use shadow_rs::shadow;
 
@@ -60,7 +60,7 @@ struct Runtime {
     proxy_addr: String,
     skin: Option<Arc<str>>,
     keychain: Arc<Keychain>,
-    recovery_phrase: Option<RecoveryPhrase>,
+    recovery_phrase: Mutex<Option<RecoveryPhrase>>,
 }
 
 fn resolve_paths(args: &Args) -> (PathBuf, PathBuf, PathBuf) {
@@ -125,7 +125,7 @@ impl Runtime {
             proxy_addr: args.proxy_addr.clone(),
             skin,
             keychain: Arc::new(keychain),
-            recovery_phrase,
+            recovery_phrase: Mutex::new(recovery_phrase),
         })
     }
 }
@@ -310,7 +310,8 @@ tatu-servers.pin",
 
     tracing::info!("Connected to proxy server");
 
-    if let Some(phrase) = &rt.recovery_phrase {
+    let phrase = rt.recovery_phrase.lock().unwrap().take();
+    if let Some(phrase) = phrase {
         // NOTE: Minecraft logs chat messages, but not server disconnect messages
 
         send_disconnect(
