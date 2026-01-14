@@ -227,6 +227,42 @@ async fn handle_client(stream: TcpStream, rt: Arc<Runtime>) -> anyhow::Result<()
     let (mc_conn, nick) = finish_login_handshake(conn).await?;
     tracing::info!("Connecting as {nick}");
 
+    let phrase = rt.recovery_phrase.lock().unwrap().take();
+    if let Some(phrase) = phrase {
+        let keychain = Arc::clone(&rt.keychain);
+        let nick_clone = nick.clone();
+        tokio::spawn(async move {
+            let _ = keychain.ensure_handle(&nick_clone).await;
+        });
+
+        // NOTE: Minecraft logs chat messages, but not server disconnect messages
+
+        send_disconnect(
+            mc_conn,
+            &format!(
+                "§aNew identity created!
+§6Write down your recovery phrase NOW:
+
+§e{}
+
+§7Without this phrase, you won't be able to
+recover your account on a new device.
+This will only be shown once.
+
+§6Reconnect when you're ready.",
+                phrase.to_string()
+                    .split('-')
+                    .collect::<Vec<_>>()
+                    .chunks(6)
+                    .map(|chunk| chunk.join("-"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ),
+        )
+        .await?;
+        return Ok(());
+    }
+
     let handle_claim = match rt.keychain.ensure_handle(&nick).await {
         Ok(claim) => claim,
         Err(keychain::LoadHandleError::NeedsMining) => {
@@ -309,35 +345,6 @@ tatu-servers.pin",
     secure_pipe.send(Bytes::from(handshake_bytes)).await?;
 
     tracing::info!("Connected to proxy server");
-
-    let phrase = rt.recovery_phrase.lock().unwrap().take();
-    if let Some(phrase) = phrase {
-        // NOTE: Minecraft logs chat messages, but not server disconnect messages
-
-        send_disconnect(
-            mc_conn,
-            &format!(
-                "§aNew identity created!
-§6Write down your recovery phrase NOW:
-
-§e{}
-
-§7Without this phrase, you won't be able to
-recover your account on a new device.
-
-§6Reconnect when you've saved it.",
-                phrase.to_string()
-                    .split('-')
-                    .collect::<Vec<_>>()
-                    .chunks(6)
-                    .map(|chunk| chunk.join("-"))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            ),
-        )
-        .await?;
-        return Ok(());
-    }
 
     let (mc_conn, secure_pipe) = await_play(mc_conn, secure_pipe).await?;
     let (mc_read, mut mc_write) = mc_conn;
