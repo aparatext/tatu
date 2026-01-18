@@ -49,9 +49,16 @@ When you connect with a nick (set by your launcher in offline mode) for the firs
   
 ### 0.4: The Housekeeping Update
 
-  - [ ] Rebrand tatu-common to tatu-lib
+  - [ ] Rebrand tatu-common as tatu-lib
     - [ ] Remove anyhow from common
     - [ ] Remove all `unwrap()`
+    - [ ] Factor out minecraft protocol
+  - [ ] `tatu-keys` command
+    - [ ] `tatu-keys recover -k [id.key]`
+    - [ ] `cat id.key | tatu-keys pub [--uuid]`
+    - [ ] `tatu-keys mine wizard [-k id.key]`
+    - [ ] `tatu-keys gen id.key`
+  - [ ] VDF progress indication
   - [ ] tracing integration in game chat
   - [ ] CONTRIBUTING.md
 
@@ -136,7 +143,13 @@ server-port=25564
 server-ip=127.0.0.1
 ```
 3. Set `bungeecord: true` in `spigot.yml`.
-4. Run: `tatu-server 0.0.0.0:25519 127.0.0.1:25564`
+4. Set
+```
+unsuported-settings:
+  perform-username-validation: false
+```
+in `config/paper-global.yml`.
+5. Run: `tatu-server 0.0.0.0:25519 127.0.0.1:25564`
 
 > [!CAUTION]
 > Do not expose the backend server to WAN. Only forward tatu (and Velocity, if colocated).
