@@ -29,13 +29,6 @@ use tatu_common::{
 
 shadow!(build);
 
-fn print_banner(fields: &[(&str, &dyn std::fmt::Display)]) {
-    for (key, value) in fields {
-        eprintln!("{}: {}", key, value);
-    }
-    eprintln!();
-}
-
 type MCReadWriteConn = (RawReadConnection, RawWriteConnection);
 
 const MAX_NICK_LENGTH: usize = 7;
@@ -188,21 +181,11 @@ async fn run_proxy(args: RunArgs) -> anyhow::Result<()> {
     let (keyfile, _, _) = resolve_paths(args.keyfile.clone());
     let runtime = Arc::new(Runtime::load(&args)?);
 
-    let version = format!(
-        "client v{} ({}/{}{})",
-        build::PKG_VERSION,
-        build::BRANCH,
-        build::SHORT_COMMIT,
-        if build::GIT_CLEAN { "" } else { "-dirty" }
-    );
-
-    print_banner(&[
-        ("version", &version as &dyn std::fmt::Display),
-        ("proxy", &args.listen_addr),
-        ("destination", &runtime.dest_addr),
-        ("keyfile", &keyfile.display()),
-        ("uuid", runtime.keychain.identity.uuid().as_hyphenated()),
-    ]);
+    eprintln!("version: client v{} ({}/{}{})", build::PKG_VERSION, build::BRANCH, build::SHORT_COMMIT, if build::GIT_CLEAN { "" } else { "-dirty" });
+    eprintln!("proxy: {}", args.listen_addr);
+    eprintln!("destination: {}", runtime.dest_addr);
+    eprintln!("keyfile: {}", keyfile.display());
+    eprintln!("uuid: {}\n", runtime.keychain.identity.uuid().as_hyphenated());
 
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::DEBUG)

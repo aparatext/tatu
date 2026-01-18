@@ -27,13 +27,6 @@ use tatu_common::{
 
 shadow!(build);
 
-fn print_banner(fields: &[(&str, &dyn std::fmt::Display)]) {
-    for (key, value) in fields {
-        eprintln!("{}: {}", key, value);
-    }
-    eprintln!();
-}
-
 #[derive(FromArgs)]
 /// Tatu server proxy
 ///
@@ -97,21 +90,11 @@ async fn main() -> anyhow::Result<()> {
     let (listen_addr, keyfile, runtime, is_new_key) = Runtime::load(args)?;
     let runtime = Arc::new(runtime);
 
-    let version = format!(
-        "server v{} ({}/{}{})",
-        build::PKG_VERSION,
-        build::BRANCH,
-        build::SHORT_COMMIT,
-        if build::GIT_CLEAN { "" } else { "-dirty" }
-    );
-
-    print_banner(&[
-        ("version", &version as &dyn std::fmt::Display),
-        ("listening", &listen_addr),
-        ("backend", &runtime.backend_addr),
-        ("keyfile", &keyfile),
-        ("key", &runtime.keypair),
-    ]);
+    eprintln!("version: server v{} ({}/{}{})", build::PKG_VERSION, build::BRANCH, build::SHORT_COMMIT, if build::GIT_CLEAN { "" } else { "-dirty" });
+    eprintln!("listening: {}", listen_addr);
+    eprintln!("backend: {}", runtime.backend_addr);
+    eprintln!("keyfile: {}", keyfile);
+    eprintln!("key: {}\n", runtime.keypair);
 
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::DEBUG)
