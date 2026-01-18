@@ -288,7 +288,7 @@ async fn handle_client(stream: TcpStream, rt: Arc<Runtime>) -> anyhow::Result<()
                 "§aNew identity created!
 §6Write down your recovery phrase NOW:
 
-§e{}
+§e{:#}
 
 §7Without this phrase, you won't be able to
 recover your account on a new device.
@@ -296,13 +296,6 @@ This will only be shown once.
 
 §6Reconnect when you're ready.",
                 phrase
-                    .to_string()
-                    .split('-')
-                    .collect::<Vec<_>>()
-                    .chunks(6)
-                    .map(|chunk| chunk.join("-"))
-                    .collect::<Vec<_>>()
-                    .join("\n")
             ),
         )
         .await?;
@@ -344,19 +337,10 @@ This will only be shown once.
                 rt.keychain.pin_server(rt.dest_addr.clone(), server_key)?;
                 tracing::info!("tip: verify this key through a trusted channel!");
 
-                fn chunked_key(key: String) -> String {
-                    key.chars()
-                        .collect::<Vec<_>>()
-                        .chunks(11)
-                        .map(|c| c.iter().collect::<String>())
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                }
-
                 Some(format!(
-                    "§6tatu: new server saved:\n§e{}
+                    "§6tatu: new server saved:\n§e{:#}
 §6tatu: this should match the key outside the game!",
-                    chunked_key(server_key.to_string())
+                    server_key
                 ))
             }
             Err(keychain::PinError::Mismatch) => {

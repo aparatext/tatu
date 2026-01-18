@@ -183,7 +183,18 @@ impl RemoteTatuKey {
 
 impl std::fmt::Display for RemoteTatuKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0.as_bytes().to_base58())
+        let keystr = self.x_pub().as_bytes().to_base58();
+        if !f.alternate() {
+            return f.write_str(&keystr);
+        }
+
+        for (i, part) in keystr.as_bytes().chunks(11).enumerate() {
+            if i > 0 {
+                f.write_str(" ")?;
+            }
+            f.write_str(std::str::from_utf8(part).unwrap())?;
+        }
+        Ok(())
     }
 }
 
@@ -279,8 +290,13 @@ impl fmt::Display for RecoveryPhrase {
             words.push(value.to_quint());
         }
 
-        let mut joined = words.join("-");
-        let result = write!(f, "{}", joined);
+        let sep = if f.alternate() { "\n" } else { "-" };
+        let mut joined = if f.alternate() {
+            words.chunks(6).map(|c| c.join("-")).collect::<Vec<_>>().join(sep)
+        } else {
+            words.join(sep)
+        };
+        let result = f.write_str(&joined);
 
         joined.zeroize();
         for w in &mut words {
