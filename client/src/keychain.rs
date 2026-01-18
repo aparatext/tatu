@@ -179,6 +179,9 @@ impl Keychain {
         let data =
             rmp_serde::to_vec(&claim).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
+        // TODO: consider adding pubkey checksum
+        // allowing a global cache over multiple identities
+
         fs::create_dir_all(&self.handles_dir)?;
         fs::write(self.handles_dir.join(format!("{}.nick", nick)), data)?;
 

@@ -8,14 +8,12 @@ ed25519 = { package = "ed25519-dalek", version = "2", features = ["serde"] }
 x25519 = { package = "x25519-dalek", version = "2", features = ["static_secrets"] }
 
 blake2 = "0.10"
-snow = { version = "0.10", default-features = false, features = [ "use-curve25519", "use-chacha20poly1305", "use-blake2", "use-getrandom" ] }
+snow = { version = "0.10", default-features = false, features = [ "use-curve25519", "use-chacha20poly1305", "use-blake2" ] }
 rug = { version = "1.28", default-features = false, features = ["integer", "std", "serde"] }
 zeroize = "1.8"
 rand = "0.8"
 
-azalea.workspace = true
-
-base58.workspace = true
+base58 = "0.2"
 proquint = "0.1"
 reed-solomon = "0.2"
 

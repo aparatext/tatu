@@ -148,9 +148,9 @@ async fn authenticate_client(
 ) -> anyhow::Result<(
     NoisePipe<TcpStream>,
     Persona,
-    azalea::protocol::packets::handshake::ServerboundHandshakePacket,
+    azalea_protocol::packets::handshake::ServerboundHandshakePacket,
 )> {
-    use azalea::protocol::read::deserialize_packet;
+    use azalea_protocol::read::deserialize_packet;
     use tatu_common::model::AuthMessage;
 
     let mut secure_stream = NoisePipe::accept(stream, &keypair.x_key()).await?;
@@ -176,13 +176,13 @@ async fn authenticate_client(
 async fn minecraft_login(
     persona: &Persona,
     client_ip: std::net::IpAddr,
-    client_handshake: &azalea::protocol::packets::handshake::ServerboundHandshakePacket,
+    client_handshake: &azalea_protocol::packets::handshake::ServerboundHandshakePacket,
     rt: &Runtime,
 ) -> anyhow::Result<(
-    azalea::protocol::connect::RawReadConnection,
-    azalea::protocol::connect::RawWriteConnection,
+    azalea_protocol::connect::RawReadConnection,
+    azalea_protocol::connect::RawWriteConnection,
 )> {
-    use azalea::protocol::{
+    use azalea_protocol::{
         connect::Connection,
         packets::{
             handshake::{ServerboundHandshakePacket, s_intention::ServerboundIntention},
@@ -229,8 +229,8 @@ fn bungeecord_hostname(client_ip: std::net::IpAddr, uuid: Uuid, skin: Option<Str
 async fn forward_messages(
     client: NoisePipe<TcpStream>,
     backend: (
-        azalea::protocol::connect::RawReadConnection,
-        azalea::protocol::connect::RawWriteConnection,
+        azalea_protocol::connect::RawReadConnection,
+        azalea_protocol::connect::RawWriteConnection,
     ),
 ) -> anyhow::Result<()> {
     let (mut backend_read, mut backend_write) = backend;

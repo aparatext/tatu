@@ -8,8 +8,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::net::{TcpListener, TcpStream};
 
-use azalea::protocol::{
-    self,
+use azalea_protocol::{
+    self as protocol,
     packets::{game::ClientboundGamePacket, handshake::ServerboundHandshakePacket},
     read::ReadPacketError,
     write::serialize_packet,
@@ -32,8 +32,8 @@ fn print_banner(fields: &[(&str, &dyn std::fmt::Display)]) {
 }
 
 type MCReadWriteConn = (
-    azalea::protocol::connect::RawReadConnection,
-    azalea::protocol::connect::RawWriteConnection,
+    azalea_protocol::connect::RawReadConnection,
+    azalea_protocol::connect::RawWriteConnection,
 );
 
 const MAX_NICK_LENGTH: usize = 7;
@@ -252,7 +252,7 @@ fn recovery_prompt() -> anyhow::Result<RecoveryPhrase> {
 }
 
 async fn handle_client(stream: TcpStream, rt: Arc<Runtime>) -> anyhow::Result<()> {
-    use azalea::protocol::{connect::Connection, packets::ClientIntention};
+    use azalea_protocol::{connect::Connection, packets::ClientIntention};
 
     let mut conn = Connection::wrap(stream);
 
@@ -412,10 +412,10 @@ tatu-servers.pin",
 }
 
 async fn send_message(
-    mc_write: &mut azalea::protocol::connect::RawWriteConnection,
+    mc_write: &mut azalea_protocol::connect::RawWriteConnection,
     message: &str,
 ) -> anyhow::Result<()> {
-    use azalea::FormattedText;
+    use azalea_chat::FormattedText;
     use protocol::packets::game::c_system_chat::ClientboundSystemChat;
 
     let ft: FormattedText = message.into();
@@ -430,7 +430,7 @@ async fn send_message(
 }
 
 async fn send_disconnect(mc_conn: MCReadWriteConn, message: &str) -> anyhow::Result<()> {
-    use azalea::FormattedText;
+    use azalea_chat::FormattedText;
     use protocol::packets::login::{
         ClientboundLoginPacket, c_login_disconnect::ClientboundLoginDisconnect,
     };
@@ -446,9 +446,9 @@ async fn send_disconnect(mc_conn: MCReadWriteConn, message: &str) -> anyhow::Res
 }
 
 async fn finish_login_handshake(
-    conn: azalea::protocol::connect::Connection<
+    conn: azalea_protocol::connect::Connection<
         ServerboundHandshakePacket,
-        azalea::protocol::packets::handshake::ClientboundHandshakePacket,
+        azalea_protocol::packets::handshake::ClientboundHandshakePacket,
     >,
 ) -> anyhow::Result<(MCReadWriteConn, String)> {
     use protocol::packets::login::ServerboundLoginPacket;
@@ -474,13 +474,13 @@ async fn finish_login_handshake(
 }
 
 async fn handle_ping(
-    conn: azalea::protocol::connect::Connection<
+    conn: azalea_protocol::connect::Connection<
         ServerboundHandshakePacket,
-        azalea::protocol::packets::handshake::ClientboundHandshakePacket,
+        azalea_protocol::packets::handshake::ClientboundHandshakePacket,
     >,
     server_addr: &str,
 ) -> anyhow::Result<()> {
-    use azalea::protocol::packets::status::{
+    use azalea_protocol::packets::status::{
         ClientboundStatusPacket, ServerboundStatusPacket,
         c_pong_response::ClientboundPongResponse,
         c_status_response::{ClientboundStatusResponse, Players, Version},
@@ -503,7 +503,7 @@ async fn handle_ping(
                     },
                     version: Version {
                         name: "Tatu Proxy".to_string(),
-                        protocol: azalea::protocol::packets::PROTOCOL_VERSION,
+                        protocol: azalea_protocol::packets::PROTOCOL_VERSION,
                     },
                     enforces_secure_chat: Some(false),
                 },
