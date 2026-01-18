@@ -1,13 +1,29 @@
+use std::{
+    net::{IpAddr, SocketAddr},
+    path::PathBuf,
+    sync::Arc,
+};
+
 use argh::FromArgs;
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
 use shadow_rs::shadow;
-use std::sync::Arc;
-use tatu_common::keys::TatuKey;
-use tatu_common::model::Persona;
-use tatu_common::noise::NoisePipe;
 use tokio::net::{TcpListener, TcpStream};
 use uuid::Uuid;
+
+use azalea_protocol::{
+    connect::{Connection, RawReadConnection, RawWriteConnection},
+    packets::{
+        handshake::{ServerboundHandshakePacket, s_intention::ServerboundIntention},
+        login::{ServerboundLoginPacket, s_hello::ServerboundHello},
+    },
+    read::deserialize_packet,
+};
+use tatu_common::{
+    keys::TatuKey,
+    model::{AuthMessage, Persona},
+    noise::NoisePipe,
+};
 
 shadow!(build);
 
@@ -32,13 +48,9 @@ struct Args {
     /// listen address
     listen_addr: String,
 
-    #[argh(
-        option,
-        short = 'k',
-        default = "std::path::PathBuf::from(\"tatu-server.key\")"
-    )]
+    #[argh(option, short = 'k', default = "PathBuf::from(\"tatu-server.key\")")]
     /// path to server keyfile
-    keyfile: std::path::PathBuf,
+    keyfile: PathBuf,
 }
 
 struct Runtime {
@@ -50,7 +62,7 @@ impl Runtime {
     fn load(args: Args) -> anyhow::Result<(String, String, Self, bool)> {
         let keyfile = std::env::var("TATU_SERVER_KEY")
             .ok()
-            .map(std::path::PathBuf::from)
+            .map(PathBuf::from)
             .unwrap_or(args.keyfile);
 
         let (keypair, recovery_phrase) = TatuKey::load_or_generate(&keyfile, None)?;
@@ -127,7 +139,7 @@ async fn main() -> anyhow::Result<()> {
 
 async fn handle_connection(
     stream: TcpStream,
-    client_addr: std::net::SocketAddr,
+    client_addr: SocketAddr,
     rt: &Runtime,
 ) -> anyhow::Result<()> {
     let (client, persona, client_handshake) = authenticate_client(stream, &rt.keypair).await?;
@@ -145,14 +157,7 @@ async fn handle_connection(
 async fn authenticate_client(
     stream: TcpStream,
     keypair: &TatuKey,
-) -> anyhow::Result<(
-    NoisePipe<TcpStream>,
-    Persona,
-    azalea_protocol::packets::handshake::ServerboundHandshakePacket,
-)> {
-    use azalea_protocol::read::deserialize_packet;
-    use tatu_common::model::AuthMessage;
-
+) -> anyhow::Result<(NoisePipe<TcpStream>, Persona, ServerboundHandshakePacket)> {
     let mut secure_stream = NoisePipe::accept(stream, &keypair.x_key()).await?;
     let client_key = secure_stream.remote_public_key()?;
 
@@ -166,8 +171,7 @@ async fn authenticate_client(
         .next()
         .await
         .ok_or_else(|| anyhow::anyhow!("Connection closed before handshake"))??;
-    let mut cursor = std::io::Cursor::new(&handshake_bytes[..]);
-    let client_handshake = deserialize_packet(&mut cursor)?;
+    let client_handshake = deserialize_packet(&mut std::io::Cursor::new(&handshake_bytes[..]))?;
 
     let persona = Persona::auth(client_key, auth_msg.handle_claim, auth_msg.skin)?;
     Ok((secure_stream, persona, client_handshake))
@@ -175,35 +179,22 @@ async fn authenticate_client(
 
 async fn minecraft_login(
     persona: &Persona,
-    client_ip: std::net::IpAddr,
-    client_handshake: &azalea_protocol::packets::handshake::ServerboundHandshakePacket,
+    client_ip: IpAddr,
+    client_handshake: &ServerboundHandshakePacket,
     rt: &Runtime,
-) -> anyhow::Result<(
-    azalea_protocol::connect::RawReadConnection,
-    azalea_protocol::connect::RawWriteConnection,
-)> {
-    use azalea_protocol::{
-        connect::Connection,
-        packets::{
-            handshake::{ServerboundHandshakePacket, s_intention::ServerboundIntention},
-            login::{ServerboundLoginPacket, s_hello::ServerboundHello},
-        },
-    };
-
-    let backend_handshake = match client_handshake {
-        ServerboundHandshakePacket::Intention(intention) => ServerboundIntention {
-            hostname: bungeecord_hostname(client_ip, persona.uuid(), persona.skin.clone()),
-            port: rt.backend_port(),
-            protocol_version: intention.protocol_version,
-            intention: intention.intention,
-        },
+) -> anyhow::Result<(RawReadConnection, RawWriteConnection)> {
+    let ServerboundHandshakePacket::Intention(intention) = client_handshake;
+    let backend_handshake = ServerboundIntention {
+        hostname: bungeecord_hostname(client_ip, persona.uuid(), persona.skin.clone()),
+        port: rt.backend_port(),
+        protocol_version: intention.protocol_version,
+        intention: intention.intention,
     };
 
     let stream = TcpStream::connect(&*rt.backend_addr).await?;
     stream.set_nodelay(true)?;
 
     let mut conn = Connection::wrap(stream);
-
     conn.write(ServerboundHandshakePacket::Intention(backend_handshake))
         .await?;
 
@@ -218,7 +209,7 @@ async fn minecraft_login(
     Ok(login_conn.into_split_raw())
 }
 
-fn bungeecord_hostname(client_ip: std::net::IpAddr, uuid: Uuid, skin: Option<String>) -> String {
+fn bungeecord_hostname(client_ip: IpAddr, uuid: Uuid, skin: Option<String>) -> String {
     format!(
         "localhost\0{client_ip}\0{}\0{}",
         uuid.as_hyphenated(),
@@ -228,10 +219,7 @@ fn bungeecord_hostname(client_ip: std::net::IpAddr, uuid: Uuid, skin: Option<Str
 
 async fn forward_messages(
     client: NoisePipe<TcpStream>,
-    backend: (
-        azalea_protocol::connect::RawReadConnection,
-        azalea_protocol::connect::RawWriteConnection,
-    ),
+    backend: (RawReadConnection, RawWriteConnection),
 ) -> anyhow::Result<()> {
     let (mut backend_read, mut backend_write) = backend;
     let (mut client_sink, mut client_stream) = client.split();

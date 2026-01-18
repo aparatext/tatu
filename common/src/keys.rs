@@ -292,7 +292,11 @@ impl fmt::Display for RecoveryPhrase {
 
         let sep = if f.alternate() { "\n" } else { "-" };
         let mut joined = if f.alternate() {
-            words.chunks(6).map(|c| c.join("-")).collect::<Vec<_>>().join(sep)
+            words
+                .chunks(6)
+                .map(|c| c.join("-"))
+                .collect::<Vec<_>>()
+                .join(sep)
         } else {
             words.join(sep)
         };

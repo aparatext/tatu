@@ -10,7 +10,12 @@ use tokio::net::{TcpListener, TcpStream};
 
 use azalea_protocol::{
     self as protocol,
-    packets::{game::ClientboundGamePacket, handshake::ServerboundHandshakePacket},
+    connect::{Connection, RawReadConnection, RawWriteConnection},
+    packets::{
+        ClientIntention, PROTOCOL_VERSION,
+        game::ClientboundGamePacket,
+        handshake::{ClientboundHandshakePacket, ServerboundHandshakePacket},
+    },
     read::ReadPacketError,
     write::serialize_packet,
 };
@@ -31,10 +36,7 @@ fn print_banner(fields: &[(&str, &dyn std::fmt::Display)]) {
     eprintln!();
 }
 
-type MCReadWriteConn = (
-    azalea_protocol::connect::RawReadConnection,
-    azalea_protocol::connect::RawWriteConnection,
-);
+type MCReadWriteConn = (RawReadConnection, RawWriteConnection);
 
 const MAX_NICK_LENGTH: usize = 7;
 
@@ -184,8 +186,7 @@ fn recovery_prompt() -> anyhow::Result<RecoveryPhrase> {
 
 async fn run_proxy(args: RunArgs) -> anyhow::Result<()> {
     let (keyfile, _, _) = resolve_paths(args.keyfile.clone());
-    let runtime = Runtime::load(&args)?;
-    let runtime = Arc::new(runtime);
+    let runtime = Arc::new(Runtime::load(&args)?);
 
     let version = format!(
         "client v{} ({}/{}{})",
@@ -248,23 +249,16 @@ fn prob_json(s: String) -> anyhow::Result<String> {
 }
 
 async fn handle_client(stream: TcpStream, rt: Arc<Runtime>) -> anyhow::Result<()> {
-    use azalea_protocol::{connect::Connection, packets::ClientIntention};
-
     let mut conn = Connection::wrap(stream);
 
-    let handshake: ServerboundHandshakePacket = match conn.read().await {
-        Ok(handshake @ ServerboundHandshakePacket::Intention(_)) => handshake,
-        Err(_) => anyhow::bail!("Failed to read handshake"),
-    };
+    let handshake = conn
+        .read()
+        .await
+        .map_err(|_| anyhow::anyhow!("Failed to read handshake"))?;
+    let ServerboundHandshakePacket::Intention(ref intention) = handshake;
 
-    let intention = match &handshake {
-        ServerboundHandshakePacket::Intention(i) => &i.intention,
-    };
-
-    match intention {
-        ClientIntention::Status => {
-            return handle_ping(conn, &rt.dest_addr).await;
-        }
+    match intention.intention {
+        ClientIntention::Status => return handle_ping(conn, &rt.dest_addr).await,
         ClientIntention::Login => {}
         _ => anyhow::bail!("Unsupported intention type"),
     }
@@ -275,9 +269,9 @@ async fn handle_client(stream: TcpStream, rt: Arc<Runtime>) -> anyhow::Result<()
     let phrase = rt.recovery_phrase.lock().unwrap().take();
     if let Some(phrase) = phrase {
         let keychain = Arc::clone(&rt.keychain);
-        let nick_clone = nick.clone();
+        let nick = nick.clone();
         tokio::spawn(async move {
-            let _ = keychain.ensure_handle(&nick_clone).await;
+            let _ = keychain.ensure_handle(&nick).await;
         });
 
         // NOTE: Minecraft logs chat messages, but not server disconnect messages
@@ -326,27 +320,26 @@ This will only be shown once.
 
     let server_key = RemoteTatuKey::from_x_pub(secure_pipe.remote_public_key()?);
 
-    let tofu_message = {
-        match rt.keychain.id_server(&rt.dest_addr, &server_key) {
-            Ok(()) => {
-                tracing::info!(server = %rt.dest_addr, key = %server_key, "known");
-                None
-            }
-            Err(keychain::PinError::NotKnown) => {
-                tracing::warn!(server = %rt.dest_addr, key = %server_key, "new server, pinning");
-                rt.keychain.pin_server(rt.dest_addr.clone(), server_key)?;
-                tracing::info!("tip: verify this key through a trusted channel!");
+    let tofu_message = match rt.keychain.id_server(&rt.dest_addr, &server_key) {
+        Ok(()) => {
+            tracing::info!(server = %rt.dest_addr, key = %server_key, "known");
+            None
+        }
+        Err(keychain::PinError::NotKnown) => {
+            tracing::warn!(server = %rt.dest_addr, key = %server_key, "new server, pinning");
+            rt.keychain.pin_server(rt.dest_addr.clone(), server_key)?;
+            tracing::info!("tip: verify this key through a trusted channel!");
 
-                Some(format!(
-                    "§6tatu: new server saved:\n§e{:#}
+            Some(format!(
+                "§6tatu: new server saved:\n§e{:#}
 §6tatu: this should match the key outside the game!",
-                    server_key
-                ))
-            }
-            Err(keychain::PinError::Mismatch) => {
-                send_disconnect(
-                    mc_conn,
-                    "§cPossible server impersonation!
+                server_key
+            ))
+        }
+        Err(keychain::PinError::Mismatch) => {
+            send_disconnect(
+                mc_conn,
+                "§cPossible server impersonation!
 §7This server's identity is different from before.
 
 It may have changed owners, lost its keys,
@@ -355,10 +348,9 @@ being wiretapped.
 
 §6If you know why it happened, delete it from
 tatu-servers.pin",
-                )
-                .await?;
-                anyhow::bail!("Server key mismatch! Potential MITM attack detected");
-            }
+            )
+            .await?;
+            anyhow::bail!("Server key mismatch! Potential MITM attack detected");
         }
     };
 
@@ -371,8 +363,9 @@ tatu-servers.pin",
         .send(Bytes::from(rmp_serde::to_vec(&auth_msg)?))
         .await?;
 
-    let handshake_bytes = protocol::write::serialize_packet(&handshake)?;
-    secure_pipe.send(Bytes::from(handshake_bytes)).await?;
+    secure_pipe
+        .send(Bytes::from(serialize_packet(&handshake)?))
+        .await?;
 
     tracing::info!("connected");
 
@@ -391,45 +384,38 @@ tatu-servers.pin",
     result
 }
 
-async fn send_message(
-    mc_write: &mut azalea_protocol::connect::RawWriteConnection,
-    message: &str,
-) -> anyhow::Result<()> {
+async fn send_message(mc_write: &mut RawWriteConnection, message: &str) -> anyhow::Result<()> {
     use azalea_chat::FormattedText;
-    use protocol::packets::game::c_system_chat::ClientboundSystemChat;
+    use protocol::packets::game::{
+        ClientboundGamePacket::SystemChat, c_system_chat::ClientboundSystemChat,
+    };
 
-    let ft: FormattedText = message.into();
-    let packet = ClientboundGamePacket::SystemChat(ClientboundSystemChat {
-        content: ft,
+    let packet = SystemChat(ClientboundSystemChat {
+        content: FormattedText::from(message),
         overlay: false,
     });
 
-    let bytes = serialize_packet(&packet)?;
-    mc_write.write(&bytes).await?;
+    mc_write.write(&serialize_packet(&packet)?).await?;
     Ok(())
 }
 
 async fn send_disconnect(mc_conn: MCReadWriteConn, message: &str) -> anyhow::Result<()> {
     use azalea_chat::FormattedText;
     use protocol::packets::login::{
-        ClientboundLoginPacket, c_login_disconnect::ClientboundLoginDisconnect,
+        ClientboundLoginPacket::LoginDisconnect, c_login_disconnect::ClientboundLoginDisconnect,
     };
-    let (_mc_read, mut mc_write) = mc_conn;
 
-    let ft: FormattedText = message.into();
-    let disconnect_packet =
-        ClientboundLoginPacket::LoginDisconnect(ClientboundLoginDisconnect { reason: ft });
+    let (_, mut mc_write) = mc_conn;
+    let packet = LoginDisconnect(ClientboundLoginDisconnect {
+        reason: FormattedText::from(message),
+    });
 
-    let bytes = serialize_packet(&disconnect_packet)?;
-    mc_write.write(&bytes).await?;
+    mc_write.write(&serialize_packet(&packet)?).await?;
     Ok(())
 }
 
 async fn finish_login_handshake(
-    conn: azalea_protocol::connect::Connection<
-        ServerboundHandshakePacket,
-        azalea_protocol::packets::handshake::ClientboundHandshakePacket,
-    >,
+    conn: Connection<ServerboundHandshakePacket, ClientboundHandshakePacket>,
 ) -> anyhow::Result<(MCReadWriteConn, String)> {
     use protocol::packets::login::ServerboundLoginPacket;
 
@@ -454,49 +440,40 @@ async fn finish_login_handshake(
 }
 
 async fn handle_ping(
-    conn: azalea_protocol::connect::Connection<
-        ServerboundHandshakePacket,
-        azalea_protocol::packets::handshake::ClientboundHandshakePacket,
-    >,
+    conn: Connection<ServerboundHandshakePacket, ClientboundHandshakePacket>,
     server_addr: &str,
 ) -> anyhow::Result<()> {
-    use azalea_protocol::packets::status::{
-        ClientboundStatusPacket, ServerboundStatusPacket,
+    use protocol::packets::status::{
+        ClientboundStatusPacket::{PongResponse, StatusResponse},
+        ServerboundStatusPacket::{PingRequest, StatusRequest},
         c_pong_response::ClientboundPongResponse,
         c_status_response::{ClientboundStatusResponse, Players, Version},
     };
 
     let mut status_conn = conn.status();
-    let description = format!("§7{}\n§6A Tatu server", server_addr);
 
-    // Expect status request, send static response
-    if let Ok(ServerboundStatusPacket::StatusRequest(_)) = status_conn.read().await {
+    if let Ok(StatusRequest(_)) = status_conn.read().await {
         status_conn
-            .write(ClientboundStatusPacket::StatusResponse(
-                ClientboundStatusResponse {
-                    description: description.into(),
-                    favicon: None,
-                    players: Players {
-                        max: 0,
-                        online: 0,
-                        sample: vec![],
-                    },
-                    version: Version {
-                        name: "Tatu Proxy".to_string(),
-                        protocol: azalea_protocol::packets::PROTOCOL_VERSION,
-                    },
-                    enforces_secure_chat: Some(false),
+            .write(StatusResponse(ClientboundStatusResponse {
+                description: format!("§7{server_addr}\n§6A Tatu server").into(),
+                favicon: None,
+                players: Players {
+                    max: 0,
+                    online: 0,
+                    sample: vec![],
                 },
-            ))
+                version: Version {
+                    name: "Tatu Proxy".to_string(),
+                    protocol: PROTOCOL_VERSION,
+                },
+                enforces_secure_chat: Some(false),
+            }))
             .await?;
     }
 
-    // Expect ping request, send pong response
-    if let Ok(ServerboundStatusPacket::PingRequest(ping)) = status_conn.read().await {
+    if let Ok(PingRequest(ping)) = status_conn.read().await {
         status_conn
-            .write(ClientboundStatusPacket::PongResponse(
-                ClientboundPongResponse { time: ping.time },
-            ))
+            .write(PongResponse(ClientboundPongResponse { time: ping.time }))
             .await?;
     }
 
