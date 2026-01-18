@@ -157,14 +157,29 @@ fn run_recovery(keyfile: Option<PathBuf>) -> anyhow::Result<()> {
     let recovery_phrase = recovery_prompt()?;
     let (identity, _) = TatuKey::load_or_generate(&keyfile, Some(&recovery_phrase))?;
 
-    let uuid = RemoteTatuKey::from_x_pub(identity.x_pub()).uuid();
-
     eprintln!(
         "recovered identity (uuid={}) to keyfile={}",
-        uuid.as_hyphenated(),
+        identity.uuid().as_hyphenated(),
         keyfile.display()
     );
     Ok(())
+}
+
+fn recovery_prompt() -> anyhow::Result<RecoveryPhrase> {
+    use std::io::{self, Write};
+
+    eprintln!("Enter your 12-word recovery phrase:");
+    eprint!("> ");
+    io::stderr().flush()?;
+
+    let input = rpassword::read_password()?;
+
+    let (phrase, errors) = RecoveryPhrase::parse(&input)?;
+    if errors > 0 {
+        tracing::warn!("corrected {} errors.", errors);
+    }
+
+    Ok(phrase)
 }
 
 async fn run_proxy(args: RunArgs) -> anyhow::Result<()> {
@@ -180,14 +195,12 @@ async fn run_proxy(args: RunArgs) -> anyhow::Result<()> {
         if build::GIT_CLEAN { "" } else { "-dirty" }
     );
 
-    let uuid = RemoteTatuKey::from_x_pub(runtime.keychain.identity.x_pub()).uuid();
-
     print_banner(&[
         ("version", &version as &dyn std::fmt::Display),
         ("proxy", &args.listen_addr),
         ("destination", &runtime.dest_addr),
         ("keyfile", &keyfile.display()),
-        ("uuid", &uuid.as_hyphenated()),
+        ("uuid", runtime.keychain.identity.uuid().as_hyphenated()),
     ]);
 
     tracing_subscriber::fmt()
@@ -232,23 +245,6 @@ fn prob_json(s: String) -> anyhow::Result<String> {
     }
 
     Ok(s)
-}
-
-fn recovery_prompt() -> anyhow::Result<RecoveryPhrase> {
-    use std::io::{self, Write};
-
-    eprintln!("Enter your 12-word recovery phrase:");
-    eprint!("> ");
-    io::stderr().flush()?;
-
-    let input = rpassword::read_password()?;
-
-    let (phrase, errors) = RecoveryPhrase::parse(&input)?;
-    if errors > 0 {
-        tracing::warn!("corrected {} errors.", errors);
-    }
-
-    Ok(phrase)
 }
 
 async fn handle_client(stream: TcpStream, rt: Arc<Runtime>) -> anyhow::Result<()> {

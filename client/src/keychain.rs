@@ -106,7 +106,8 @@ impl Keychain {
     }
 
     pub fn load_handle(&self, nick: &str) -> Result<HandleClaim, LoadHandleError> {
-        let file_path = self.handles_dir.join(format!("{}.nick", nick));
+        let uuid_dir = self.handles_dir.join(self.identity.uuid().to_string());
+        let file_path = uuid_dir.join(format!("{}.nick", nick));
 
         if !file_path.exists() {
             return Err(LoadHandleError::NeedsMining);
@@ -179,11 +180,9 @@ impl Keychain {
         let data =
             rmp_serde::to_vec(&claim).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
-        // TODO: consider adding pubkey checksum
-        // allowing a global cache over multiple identities
-
-        fs::create_dir_all(&self.handles_dir)?;
-        fs::write(self.handles_dir.join(format!("{}.nick", nick)), data)?;
+        let uuid_dir = self.handles_dir.join(self.identity.uuid().to_string());
+        fs::create_dir_all(&uuid_dir)?;
+        fs::write(uuid_dir.join(format!("{}.nick", nick)), data)?;
 
         tracing::info!(nick = %nick, "handle mined");
         Ok(claim)

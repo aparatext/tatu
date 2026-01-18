@@ -36,6 +36,10 @@ impl TatuKey {
         StaticSecret::from(self.ed_key().to_scalar_bytes())
     }
 
+    pub fn uuid(&self) -> Uuid {
+        RemoteTatuKey::from_x_pub(self.x_pub()).uuid()
+    }
+
     pub fn generate(mut rng: impl rand::CryptoRng + rand::RngCore) -> (Self, RecoveryPhrase) {
         let mut entropy = [0u8; 16];
         rng.fill_bytes(&mut entropy);
