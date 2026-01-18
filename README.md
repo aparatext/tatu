@@ -42,7 +42,7 @@ When you connect with a nick (set by your launcher in offline mode) for the firs
 ### 0.3: The Network Update
 
   - [ ] (0.3.0) Take Minecraft Protocol in-house
-    - [ ] (0.3.1) Legacy Minecraft versions (1.8, 1.12, 1.18, 1.19)
+    - [ ] (0.3.1) Support legacy Minecraft versions (1.8, 1.12, 1.18, 1.19)
   - [ ] Preserve FML handshake
   - [ ] Server Ping forwarding
   - [ ] Rewrite NoisePipe
@@ -53,6 +53,9 @@ When you connect with a nick (set by your launcher in offline mode) for the firs
     - [ ] Remove anyhow from common
     - [ ] Remove all `unwrap()`
     - [ ] Factor out minecraft protocol
+  - [ ] Profile throughput/binary size
+    - [x] Remove clap
+    - [ ] Remoze azalea
   - [ ] `tatu-keys` command
     - [ ] `tatu-keys recover -k [id.key]`
     - [ ] `cat id.key | tatu-keys pub [--uuid]`
@@ -96,7 +99,7 @@ cargo install --git https://github.com/aparatext/tatu tatu-server tatu-client
 
 ### Players
 
-1. Run: `tatu-client my-awesome-server.net:25519 [--skin my.skin]`
+1. Run: `tatu-client run my-awesome-server.net:25519 -s my.skin`
 2. Set your launcher to offline mode and choose your nick.
 3. Connect to `localhost:25565`.
 

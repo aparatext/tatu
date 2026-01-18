@@ -1,5 +1,5 @@
+use argh::FromArgs;
 use bytes::Bytes;
-use clap::Parser;
 use futures::{SinkExt, StreamExt};
 use shadow_rs::shadow;
 use std::sync::Arc;
@@ -18,17 +18,27 @@ fn print_banner(fields: &[(&str, &dyn std::fmt::Display)]) {
     eprintln!();
 }
 
-#[derive(Parser)]
-#[command(about = "Tatu server proxy")]
+#[derive(FromArgs)]
+/// Tatu server proxy
+///
+/// Environment variables:
+///   TATU_SERVER_KEY    Path to server identity key
 struct Args {
-    #[arg(default_value = "127.0.0.1:25564")]
+    #[argh(positional, default = "String::from(\"127.0.0.1:25564\")")]
+    /// backend Minecraft server address
     backend_addr: String,
 
-    #[arg(long, default_value = "0.0.0.0:25519")]
+    #[argh(option, short = 'l', default = "String::from(\"0.0.0.0:25519\")")]
+    /// listen address
     listen_addr: String,
 
-    #[arg(long, env = "TATU_SERVER_KEY", default_value = "tatu-server.key")]
-    key_path: std::path::PathBuf,
+    #[argh(
+        option,
+        short = 'k',
+        default = "std::path::PathBuf::from(\"tatu-server.key\")"
+    )]
+    /// path to server keyfile
+    keyfile: std::path::PathBuf,
 }
 
 struct Runtime {
@@ -37,8 +47,13 @@ struct Runtime {
 }
 
 impl Runtime {
-    fn load(args: Args) -> anyhow::Result<(String, Self, bool)> {
-        let (keypair, recovery_phrase) = TatuKey::load_or_generate(&args.key_path, None)?;
+    fn load(args: Args) -> anyhow::Result<(String, String, Self, bool)> {
+        let keyfile = std::env::var("TATU_SERVER_KEY")
+            .ok()
+            .map(std::path::PathBuf::from)
+            .unwrap_or(args.keyfile);
+
+        let (keypair, recovery_phrase) = TatuKey::load_or_generate(&keyfile, None)?;
         let keypair = Arc::new(keypair);
         let is_new_key = recovery_phrase.is_some();
 
@@ -47,7 +62,12 @@ impl Runtime {
             keypair,
         };
 
-        Ok((args.listen_addr, runtime, is_new_key))
+        Ok((
+            args.listen_addr,
+            keyfile.display().to_string(),
+            runtime,
+            is_new_key,
+        ))
     }
 
     fn backend_port(&self) -> u16 {
@@ -61,9 +81,8 @@ impl Runtime {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let args = Args::parse();
-    let keyfile = args.key_path.display().to_string();
-    let (listen_addr, runtime, is_new_key) = Runtime::load(args)?;
+    let args: Args = argh::from_env();
+    let (listen_addr, keyfile, runtime, is_new_key) = Runtime::load(args)?;
     let runtime = Arc::new(runtime);
 
     let version = format!(

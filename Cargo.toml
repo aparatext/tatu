@@ -24,4 +24,4 @@ tracing-subscriber = "0.3"
 thiserror = "2.0"
 base58 = "0.2.0"
 uuid = "1.19"
-clap = { version = "4", features = ["derive", "env"] }
+argh = "0.1"

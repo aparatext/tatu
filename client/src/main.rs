@@ -1,7 +1,7 @@
 mod keychain;
 
+use argh::FromArgs;
 use bytes::Bytes;
-use clap::Parser;
 use futures::{SinkExt, StreamExt};
 use shadow_rs::shadow;
 use std::path::PathBuf;
@@ -38,28 +38,48 @@ type MCReadWriteConn = (
 
 const MAX_NICK_LENGTH: usize = 7;
 
-#[derive(Parser)]
-#[command(about = "Tatu client proxy")]
-struct Args {
+#[derive(FromArgs)]
+/// tatu client proxy
+struct Cli {
+    #[argh(subcommand)]
+    mode: Mode,
+}
+
+#[derive(FromArgs)]
+#[argh(subcommand)]
+enum Mode {
+    Run(RunArgs),
+    Recover(RecoverArgs),
+}
+
+#[derive(FromArgs)]
+#[argh(subcommand, name = "run")]
+/// Run the client proxy
+struct RunArgs {
+    #[argh(positional)]
+    /// destination server address
     dest_addr: String,
 
-    #[arg(long, default_value = "127.0.0.1:25565")]
+    #[argh(option, short = 'l', default = "String::from(\"127.0.0.1:25565\")")]
+    /// listen address (default: 127.0.0.1:25565)
     listen_addr: String,
 
-    #[arg(long = "skin")]
-    skin_path: Option<PathBuf>,
+    #[argh(option, short = 's')]
+    /// path to skin file
+    skin: Option<PathBuf>,
 
-    #[arg(long = "key", env = "TATU_KEY")]
-    key_path: Option<PathBuf>,
+    #[argh(option, short = 'k')]
+    /// path to keyfile
+    keyfile: Option<PathBuf>,
+}
 
-    #[arg(long = "handles", env = "TATU_HANDLE_CACHE")]
-    handles_path: Option<PathBuf>,
-
-    #[arg(long = "known-servers", env = "TATU_KNOWN_SERVERS")]
-    known_servers_path: Option<PathBuf>,
-
-    #[arg(long = "recover", help = "Recover identity from recovery phrase")]
-    recover: bool,
+#[derive(FromArgs)]
+#[argh(subcommand, name = "recover")]
+/// Recover identity from recovery phrase
+struct RecoverArgs {
+    #[argh(option, short = 'k')]
+    /// path to keyfile
+    keyfile: Option<PathBuf>,
 }
 
 struct Runtime {
@@ -69,46 +89,36 @@ struct Runtime {
     recovery_phrase: Mutex<Option<RecoveryPhrase>>,
 }
 
-fn resolve_paths(args: &Args) -> (PathBuf, PathBuf, PathBuf) {
+fn resolve_paths(keyfile: Option<PathBuf>) -> (PathBuf, PathBuf, PathBuf) {
     let config_dir = dirs::config_dir().unwrap_or_else(|| PathBuf::from(".config"));
     let cache_dir = dirs::cache_dir().unwrap_or_else(|| PathBuf::from(".cache"));
 
-    let key_path = args
-        .key_path
-        .clone()
-        .unwrap_or_else(|| config_dir.join("tatu/identity.key"));
+    let keyfile = keyfile.unwrap_or_else(|| config_dir.join("tatu/identity.key"));
 
-    let handles_path = args
-        .handles_path
-        .clone()
+    let handles_path = std::env::var("TATU_HANDLE_CACHE")
+        .ok()
+        .map(PathBuf::from)
         .unwrap_or_else(|| cache_dir.join("tatu/handles"));
 
-    let known_servers_path = args
-        .known_servers_path
-        .clone()
+    let known_servers_path = std::env::var("TATU_KNOWN_SERVERS")
+        .ok()
+        .map(PathBuf::from)
         .unwrap_or_else(|| config_dir.join("tatu/known-servers.pin"));
 
-    (key_path, handles_path, known_servers_path)
+    (keyfile, handles_path, known_servers_path)
 }
 
 impl Runtime {
-    fn load(args: &Args) -> anyhow::Result<Self> {
-        let (key_path, handles_path, known_servers_path) = resolve_paths(args);
+    fn load(args: &RunArgs) -> anyhow::Result<Self> {
+        let (keyfile, handles_path, known_servers_path) = resolve_paths(args.keyfile.clone());
 
-        let recovery_phrase = if args.recover {
-            Some(recovery_prompt()?)
-        } else {
-            None
-        };
-
-        let (identity, recovery_phrase) =
-            TatuKey::load_or_generate(&key_path, recovery_phrase.as_ref())?;
+        let (identity, recovery_phrase) = TatuKey::load_or_generate(&keyfile, None)?;
 
         let identity = Arc::new(identity);
         let keychain = Keychain::new(identity, &handles_path, &known_servers_path)?;
 
         let skin = args
-            .skin_path
+            .skin
             .as_ref()
             .map(std::fs::read_to_string)
             .transpose()?
@@ -127,12 +137,40 @@ impl Runtime {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let args = Args::parse();
-    let (key_path, _, _) = resolve_paths(&args);
+    let cli: Cli = argh::from_env();
+
+    match cli.mode {
+        Mode::Recover(recover_args) => {
+            run_recovery(recover_args.keyfile)?;
+        }
+        Mode::Run(run_args) => {
+            run_proxy(run_args).await?;
+        }
+    }
+
+    Ok(())
+}
+
+fn run_recovery(keyfile: Option<PathBuf>) -> anyhow::Result<()> {
+    let (keyfile, _, _) = resolve_paths(keyfile);
+
+    let recovery_phrase = recovery_prompt()?;
+    let (identity, _) = TatuKey::load_or_generate(&keyfile, Some(&recovery_phrase))?;
+
+    let uuid = RemoteTatuKey::from_x_pub(identity.x_pub()).uuid();
+
+    eprintln!(
+        "recovered identity (uuid={}) to keyfile={}",
+        uuid.as_hyphenated(),
+        keyfile.display()
+    );
+    Ok(())
+}
+
+async fn run_proxy(args: RunArgs) -> anyhow::Result<()> {
+    let (keyfile, _, _) = resolve_paths(args.keyfile.clone());
     let runtime = Runtime::load(&args)?;
     let runtime = Arc::new(runtime);
-
-    let uuid = RemoteTatuKey::from_x_pub(runtime.keychain.identity.x_pub()).uuid();
 
     let version = format!(
         "client v{} ({}/{}{})",
@@ -142,11 +180,13 @@ async fn main() -> anyhow::Result<()> {
         if build::GIT_CLEAN { "" } else { "-dirty" }
     );
 
+    let uuid = RemoteTatuKey::from_x_pub(runtime.keychain.identity.x_pub()).uuid();
+
     print_banner(&[
         ("version", &version as &dyn std::fmt::Display),
         ("proxy", &args.listen_addr),
         ("destination", &runtime.dest_addr),
-        ("keyfile", &key_path.display()),
+        ("keyfile", &keyfile.display()),
         ("uuid", &uuid.as_hyphenated()),
     ]);
 
@@ -154,12 +194,8 @@ async fn main() -> anyhow::Result<()> {
         .with_max_level(tracing::Level::DEBUG)
         .init();
 
-    let recovery_phrase_str = {
-        let phrase_guard = runtime.recovery_phrase.lock().unwrap();
-        phrase_guard.as_ref().map(|p| p.to_string())
-    };
-
-    if let Some(phrase) = recovery_phrase_str {
+    let recovery_phrase = runtime.recovery_phrase.lock().unwrap().take();
+    if let Some(phrase) = recovery_phrase {
         tracing::warn!("new identity generated");
         tracing::warn!("recovery phrase: {}", phrase);
         tracing::warn!(
@@ -169,7 +205,6 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let listener = TcpListener::bind(&args.listen_addr).await?;
-
     loop {
         let (stream, _) = listener.accept().await?;
         stream.set_nodelay(true)?;
@@ -202,16 +237,15 @@ fn prob_json(s: String) -> anyhow::Result<String> {
 fn recovery_prompt() -> anyhow::Result<RecoveryPhrase> {
     use std::io::{self, Write};
 
-    eprintln!("Enter your 12-word recovery phrase (separated by spaces):");
+    eprintln!("Enter your 12-word recovery phrase:");
     eprint!("> ");
     io::stderr().flush()?;
 
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
+    let input = rpassword::read_password()?;
 
     let (phrase, errors) = RecoveryPhrase::parse(&input)?;
     if errors > 0 {
-        tracing::warn!("Corrected {} errors.", errors);
+        tracing::warn!("corrected {} errors.", errors);
     }
 
     Ok(phrase)

@@ -18,7 +18,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
 rmp-serde.workspace = true
-clap.workspace = true
+argh.workspace = true
 
 [build-dependencies]
 shadow-rs = "1.5"
