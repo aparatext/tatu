@@ -55,25 +55,20 @@ impl Handle {
         }
     }
 
-    // NOTE: COGDEBT: Base conversion
     pub fn discriminator(n: u32) -> String {
         const LETTERS: &[u8] = b"abcdefghijklmnopqrstuvwxyz";
 
-        let digits = n % 10000;
-        let letters = n / 10000;
+        let (digits, mut rem) = (n % 10000, n / 10000);
+        let mut letters = String::with_capacity(4);
 
-        let mut letter_str = String::with_capacity(4);
-        let mut temp = letters;
         for _ in 0..4 {
-            letter_str.push(LETTERS[(temp % 26) as usize] as char);
-            temp /= 26;
+            let c = LETTERS[(rem % 26) as usize] as char;
+            letters.push(c);
+            rem /= 26;
         }
+        let letters: String = letters.chars().rev().collect();
 
-        format!(
-            "{}{:04}",
-            letter_str.chars().rev().collect::<String>(),
-            digits
-        )
+        format!("{}{:04}", letters, digits)
     }
 }
 
