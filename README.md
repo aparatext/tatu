@@ -41,6 +41,7 @@ When you connect with a nick (set by your launcher in offline mode) for the firs
 
 ### 0.3: The Network Update
 
+  - [x] Abstract Minecraft players
   - [ ] (0.3.0) Take Minecraft Protocol in-house
     - [ ] (0.3.1) Support legacy Minecraft versions (1.8, 1.12, 1.18, 1.19)
   - [ ] Preserve FML handshake

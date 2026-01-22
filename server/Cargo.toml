@@ -10,7 +10,6 @@ tatu-common = { path = "../common" }
 
 tokio.workspace = true
 futures.workspace = true
-azalea-protocol.workspace = true
 bytes.workspace = true
 
 anyhow.workspace = true

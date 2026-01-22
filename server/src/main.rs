@@ -1,26 +1,11 @@
-use std::{
-    net::{IpAddr, SocketAddr},
-    path::PathBuf,
-    sync::Arc,
-};
-
 use argh::FromArgs;
-use bytes::Bytes;
-use futures::{SinkExt, StreamExt};
 use shadow_rs::shadow;
+use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 use tokio::net::{TcpListener, TcpStream};
-use uuid::Uuid;
 
-use azalea_protocol::{
-    connect::{Connection, RawReadConnection, RawWriteConnection},
-    packets::{
-        handshake::{ServerboundHandshakePacket, s_intention::ServerboundIntention},
-        login::{ServerboundLoginPacket, s_hello::ServerboundHello},
-    },
-    read::deserialize_packet,
-};
 use tatu_common::{
     keys::TatuKey,
+    minecraft::ServerSidePlayer,
     model::{AuthMessage, Persona},
     noise::NoisePipe,
 };
@@ -28,10 +13,7 @@ use tatu_common::{
 shadow!(build);
 
 #[derive(FromArgs)]
-/// Tatu server proxy
-///
-/// Environment variables:
-///   TATU_SERVER_KEY    Path to server identity key
+/// tatu server proxy
 struct Args {
     #[argh(positional, default = "String::from(\"127.0.0.1:25564\")")]
     /// backend Minecraft server address
@@ -58,9 +40,9 @@ impl Runtime {
             .map(PathBuf::from)
             .unwrap_or(args.keyfile);
 
-        let (keypair, recovery_phrase) = TatuKey::load_or_generate(&keyfile, None)?;
+        let (keypair, keyphrase) = TatuKey::load_or_generate(&keyfile, None)?;
         let keypair = Arc::new(keypair);
-        let is_new_key = recovery_phrase.is_some();
+        let is_new_key = keyphrase.is_some();
 
         let runtime = Self {
             backend_addr: args.backend_addr.into(),
@@ -74,14 +56,6 @@ impl Runtime {
             is_new_key,
         ))
     }
-
-    fn backend_port(&self) -> u16 {
-        self.backend_addr
-            .split(':')
-            .nth(1)
-            .and_then(|p| p.parse().ok())
-            .unwrap_or(25565)
-    }
 }
 
 #[tokio::main]
@@ -90,7 +64,13 @@ async fn main() -> anyhow::Result<()> {
     let (listen_addr, keyfile, runtime, is_new_key) = Runtime::load(args)?;
     let runtime = Arc::new(runtime);
 
-    eprintln!("version: server v{} ({}/{}{})", build::PKG_VERSION, build::BRANCH, build::SHORT_COMMIT, if build::GIT_CLEAN { "" } else { "-dirty" });
+    eprintln!(
+        "version: server v{} ({}/{}{})",
+        build::PKG_VERSION,
+        build::BRANCH,
+        build::SHORT_COMMIT,
+        if build::GIT_CLEAN { "" } else { "-dirty" }
+    );
     eprintln!("listening: {}", listen_addr);
     eprintln!("backend: {}", runtime.backend_addr);
     eprintln!("keyfile: {}", keyfile);
@@ -121,27 +101,31 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn handle_connection(
-    stream: TcpStream,
+    tatu_stream: TcpStream,
     client_addr: SocketAddr,
     rt: &Runtime,
 ) -> anyhow::Result<()> {
-    let (client, persona, client_handshake) = authenticate_client(stream, &rt.keypair).await?;
+    let (pipe, persona, handshake_bytes) = auth_client(tatu_stream, &rt.keypair).await?;
     tracing::info!(name = %persona.handle, uuid = %persona.uuid(), ip = %client_addr.ip(), "authed");
 
-    let backend_conn = minecraft_login(&persona, client_addr.ip(), &client_handshake, rt).await?;
+    let player = ServerSidePlayer::new(&persona, client_addr.ip());
+    let backend = TcpStream::connect(&*rt.backend_addr).await?;
+    let bridge = player.connect(backend, &handshake_bytes).await?;
 
     tracing::info!(name = %persona.handle, "joined");
-    let result = forward_messages(client, backend_conn).await;
+    let result = bridge.forward_with_noise_pipe(pipe).await;
     tracing::info!(name = %persona.handle, "left");
 
-    result
+    result.map_err(Into::into)
 }
 
-async fn authenticate_client(
-    stream: TcpStream,
+async fn auth_client(
+    tatu_stream: TcpStream,
     keypair: &TatuKey,
-) -> anyhow::Result<(NoisePipe<TcpStream>, Persona, ServerboundHandshakePacket)> {
-    let mut secure_stream = NoisePipe::accept(stream, &keypair.x_key()).await?;
+) -> anyhow::Result<(NoisePipe<TcpStream>, Persona, bytes::Bytes)> {
+    use futures::StreamExt;
+
+    let mut secure_stream = NoisePipe::accept(tatu_stream, &keypair.x_key()).await?;
     let client_key = secure_stream.remote_public_key()?;
 
     let auth_bytes = secure_stream
@@ -154,80 +138,7 @@ async fn authenticate_client(
         .next()
         .await
         .ok_or_else(|| anyhow::anyhow!("Connection closed before handshake"))??;
-    let client_handshake = deserialize_packet(&mut std::io::Cursor::new(&handshake_bytes[..]))?;
 
     let persona = Persona::auth(client_key, auth_msg.handle_claim, auth_msg.skin)?;
-    Ok((secure_stream, persona, client_handshake))
-}
-
-async fn minecraft_login(
-    persona: &Persona,
-    client_ip: IpAddr,
-    client_handshake: &ServerboundHandshakePacket,
-    rt: &Runtime,
-) -> anyhow::Result<(RawReadConnection, RawWriteConnection)> {
-    let ServerboundHandshakePacket::Intention(intention) = client_handshake;
-    let backend_handshake = ServerboundIntention {
-        hostname: bungeecord_hostname(client_ip, persona.uuid(), persona.skin.clone()),
-        port: rt.backend_port(),
-        protocol_version: intention.protocol_version,
-        intention: intention.intention,
-    };
-
-    let stream = TcpStream::connect(&*rt.backend_addr).await?;
-    stream.set_nodelay(true)?;
-
-    let mut conn = Connection::wrap(stream);
-    conn.write(ServerboundHandshakePacket::Intention(backend_handshake))
-        .await?;
-
-    let mut login_conn = conn.login();
-    login_conn
-        .write(ServerboundLoginPacket::Hello(ServerboundHello {
-            name: persona.handle.to_string(),
-            profile_id: Uuid::nil(),
-        }))
-        .await?;
-
-    Ok(login_conn.into_split_raw())
-}
-
-fn bungeecord_hostname(client_ip: IpAddr, uuid: Uuid, skin: Option<String>) -> String {
-    format!(
-        "localhost\0{client_ip}\0{}\0{}",
-        uuid.as_hyphenated(),
-        skin.unwrap_or_else(|| "[]".to_string())
-    )
-}
-
-async fn forward_messages(
-    client: NoisePipe<TcpStream>,
-    backend: (RawReadConnection, RawWriteConnection),
-) -> anyhow::Result<()> {
-    let (mut backend_read, mut backend_write) = backend;
-    let (mut client_sink, mut client_stream) = client.split();
-
-    loop {
-        tokio::select! {
-            client_msg = client_stream.next() => {
-                match client_msg {
-                    Some(Ok(bytes)) => {
-                        backend_write.write(&bytes).await?;
-                    }
-                    Some(Err(e)) => return Err(e.into()),
-                    None => break,
-                }
-            }
-            backend_msg = backend_read.read() => {
-                match backend_msg {
-                    Ok(bytes) => {
-                        client_sink.send(Bytes::from(bytes)).await?;
-                        client_sink.flush().await?;
-                    }
-                    Err(e) => return Err(e.into()),
-                }
-            }
-        }
-    }
-    Ok(())
+    Ok((secure_stream, persona, handshake_bytes))
 }

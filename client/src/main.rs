@@ -2,34 +2,21 @@ mod keychain;
 
 use argh::FromArgs;
 use bytes::Bytes;
-use futures::{SinkExt, StreamExt};
+use futures::SinkExt;
 use shadow_rs::shadow;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::net::{TcpListener, TcpStream};
 
-use azalea_protocol::{
-    self as protocol,
-    connect::{Connection, RawReadConnection, RawWriteConnection},
-    packets::{
-        ClientIntention, PROTOCOL_VERSION,
-        game::ClientboundGamePacket,
-        handshake::{ClientboundHandshakePacket, ServerboundHandshakePacket},
-    },
-    read::ReadPacketError,
-    write::serialize_packet,
-};
-
 use keychain::Keychain;
 use tatu_common::{
     keys::{RecoveryPhrase, RemoteTatuKey, TatuKey},
+    minecraft::Handshake,
     model::AuthMessage,
     noise::NoisePipe,
 };
 
 shadow!(build);
-
-type MCReadWriteConn = (RawReadConnection, RawWriteConnection);
 
 const MAX_NICK_LENGTH: usize = 7;
 
@@ -49,7 +36,7 @@ enum Mode {
 
 #[derive(FromArgs)]
 #[argh(subcommand, name = "run")]
-/// Run the client proxy
+/// Connect to a tatu server through local proxy
 struct RunArgs {
     #[argh(positional)]
     /// destination server address
@@ -81,7 +68,7 @@ struct Runtime {
     dest_addr: String,
     skin: Option<Arc<str>>,
     keychain: Arc<Keychain>,
-    recovery_phrase: Mutex<Option<RecoveryPhrase>>,
+    keyphrase: Mutex<Option<RecoveryPhrase>>,
 }
 
 fn resolve_paths(keyfile: Option<PathBuf>) -> (PathBuf, PathBuf, PathBuf) {
@@ -107,7 +94,7 @@ impl Runtime {
     fn load(args: &RunArgs) -> anyhow::Result<Self> {
         let (keyfile, handles_path, known_servers_path) = resolve_paths(args.keyfile.clone());
 
-        let (identity, recovery_phrase) = TatuKey::load_or_generate(&keyfile, None)?;
+        let (identity, keyphrase) = TatuKey::load_or_generate(&keyfile, None)?;
 
         let identity = Arc::new(identity);
         let keychain = Keychain::new(identity, &handles_path, &known_servers_path)?;
@@ -117,7 +104,7 @@ impl Runtime {
             .as_ref()
             .map(std::fs::read_to_string)
             .transpose()?
-            .map(prob_json)
+            .map(ensure_json)
             .transpose()?
             .map(Into::into);
 
@@ -125,9 +112,28 @@ impl Runtime {
             dest_addr: args.dest_addr.clone(),
             skin,
             keychain: Arc::new(keychain),
-            recovery_phrase: Mutex::new(recovery_phrase),
+            keyphrase: Mutex::new(keyphrase),
         })
     }
+}
+
+// Probabalistic JSON check
+// We don't need to parse it anywhere and syntax will fall open in Minecraft.
+// This is just a user affordance.
+fn ensure_json(s: String) -> anyhow::Result<String> {
+    let t = s.trim();
+
+    if !t.starts_with('{') && !t.starts_with('[') {
+        anyhow::bail!("Not JSON given");
+    }
+    if !t.ends_with('}') && !t.ends_with(']') {
+        anyhow::bail!("JSON cut off");
+    }
+    if t.contains('{') && t.contains(':') && !t.contains("\":") {
+        anyhow::bail!("Given SNBT, not JSON (tip: quote the fields)");
+    }
+
+    Ok(s)
 }
 
 #[tokio::main]
@@ -135,12 +141,8 @@ async fn main() -> anyhow::Result<()> {
     let cli: Cli = argh::from_env();
 
     match cli.mode {
-        Mode::Recover(recover_args) => {
-            run_recovery(recover_args.keyfile)?;
-        }
-        Mode::Run(run_args) => {
-            run_proxy(run_args).await?;
-        }
+        Mode::Recover(recover_args) => run_recovery(recover_args.keyfile)?,
+        Mode::Run(run_args) => run_proxy(run_args).await?,
     }
 
     Ok(())
@@ -149,8 +151,8 @@ async fn main() -> anyhow::Result<()> {
 fn run_recovery(keyfile: Option<PathBuf>) -> anyhow::Result<()> {
     let (keyfile, _, _) = resolve_paths(keyfile);
 
-    let recovery_phrase = recovery_prompt()?;
-    let (identity, _) = TatuKey::load_or_generate(&keyfile, Some(&recovery_phrase))?;
+    let keyphrase = recovery_prompt()?;
+    let (identity, _) = TatuKey::load_or_generate(&keyfile, Some(&keyphrase))?;
 
     eprintln!(
         "recovered identity (uuid={}) to keyfile={}",
@@ -181,18 +183,27 @@ async fn run_proxy(args: RunArgs) -> anyhow::Result<()> {
     let (keyfile, _, _) = resolve_paths(args.keyfile.clone());
     let runtime = Arc::new(Runtime::load(&args)?);
 
-    eprintln!("version: client v{} ({}/{}{})", build::PKG_VERSION, build::BRANCH, build::SHORT_COMMIT, if build::GIT_CLEAN { "" } else { "-dirty" });
+    eprintln!(
+        "version: client v{} ({}/{}{})",
+        build::PKG_VERSION,
+        build::BRANCH,
+        build::SHORT_COMMIT,
+        if build::GIT_CLEAN { "" } else { "-dirty" }
+    );
     eprintln!("proxy: {}", args.listen_addr);
     eprintln!("destination: {}", runtime.dest_addr);
     eprintln!("keyfile: {}", keyfile.display());
-    eprintln!("uuid: {}\n", runtime.keychain.identity.uuid().as_hyphenated());
+    eprintln!(
+        "uuid: {}\n",
+        runtime.keychain.identity.uuid().as_hyphenated()
+    );
 
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::DEBUG)
         .init();
 
-    let recovery_phrase = runtime.recovery_phrase.lock().unwrap().take();
-    if let Some(phrase) = recovery_phrase {
+    let keyphrase = runtime.keyphrase.lock().unwrap().take();
+    if let Some(phrase) = keyphrase {
         tracing::warn!("new identity generated");
         tracing::warn!("recovery phrase: {}", phrase);
         tracing::warn!(
@@ -215,41 +226,20 @@ async fn run_proxy(args: RunArgs) -> anyhow::Result<()> {
     }
 }
 
-fn prob_json(s: String) -> anyhow::Result<String> {
-    let t = s.trim();
-
-    if !t.starts_with('{') && !t.starts_with('[') {
-        anyhow::bail!("Not JSON given");
-    }
-    if !t.ends_with('}') && !t.ends_with(']') {
-        anyhow::bail!("JSON cut off");
-    }
-    if t.contains('{') && t.contains(':') && !t.contains("\":") {
-        anyhow::bail!("Given SNBT, not JSON (tip: quote the fields)");
-    }
-
-    Ok(s)
-}
-
 async fn handle_client(stream: TcpStream, rt: Arc<Runtime>) -> anyhow::Result<()> {
-    let mut conn = Connection::wrap(stream);
+    let handshake = Handshake::accept(stream).await?;
 
-    let handshake = conn
-        .read()
-        .await
-        .map_err(|_| anyhow::anyhow!("Failed to read handshake"))?;
-    let ServerboundHandshakePacket::Intention(ref intention) = handshake;
-
-    match intention.intention {
-        ClientIntention::Status => return handle_ping(conn, &rt.dest_addr).await,
-        ClientIntention::Login => {}
-        _ => anyhow::bail!("Unsupported intention type"),
+    if handshake.is_status() {
+        return Ok(handshake
+            .handle_status(format!("§7{}\n§6A Tatu server", rt.dest_addr))
+            .await?);
     }
 
-    let (mc_conn, nick) = finish_login_handshake(conn).await?;
+    let (mut mc, mut nick) = handshake.into_login().await?;
+    nick.truncate(MAX_NICK_LENGTH);
     tracing::info!(nick = %nick, server = %rt.dest_addr, "connecting");
 
-    let phrase = rt.recovery_phrase.lock().unwrap().take();
+    let phrase = rt.keyphrase.lock().unwrap().take();
     if let Some(phrase) = phrase {
         let keychain = Arc::clone(&rt.keychain);
         let nick = nick.clone();
@@ -257,24 +247,17 @@ async fn handle_client(stream: TcpStream, rt: Arc<Runtime>) -> anyhow::Result<()
             let _ = keychain.ensure_handle(&nick).await;
         });
 
-        // NOTE: Minecraft logs chat messages, but not server disconnect messages
-
-        send_disconnect(
-            mc_conn,
-            &format!(
-                "§aNew identity created!
-§6Write down your recovery phrase NOW:
-
-§e{:#}
+        mc.send_disconnect(&format!(
+            "§aNew identity created!
+§6Write down your recovery phrase NOW:\n\n§e{:#}
 
 §7Without this phrase, you won't be able to
 recover your account on a new device.
 This will only be shown once.
 
 §6Reconnect when you're ready.",
-                phrase
-            ),
-        )
+            phrase
+        ))
         .await?;
         return Ok(());
     }
@@ -282,8 +265,7 @@ This will only be shown once.
     let handle_claim = match rt.keychain.ensure_handle(&nick).await {
         Ok(claim) => claim,
         Err(keychain::LoadHandleError::NeedsMining) => {
-            send_disconnect(
-                mc_conn,
+            mc.send_disconnect(
                 "§6Mining your handle discriminator...
 
 §7This should take about 40 seconds.
@@ -295,33 +277,31 @@ This will only be shown once.
         Err(keychain::LoadHandleError::Io(e)) => return Err(e.into()),
     };
 
-    let tcp_stream = TcpStream::connect(&rt.dest_addr).await?;
-    tcp_stream.set_nodelay(true)?;
+    let tatu_stream = TcpStream::connect(&rt.dest_addr).await?;
+    tatu_stream.set_nodelay(true)?;
 
     let x_key = rt.keychain.identity.x_key();
-    let mut secure_pipe = NoisePipe::connect(tcp_stream, &x_key).await?;
+    let mut secure_pipe = NoisePipe::connect(tatu_stream, &x_key).await?;
 
     let server_key = RemoteTatuKey::from_x_pub(secure_pipe.remote_public_key()?);
 
-    let tofu_message = match rt.keychain.id_server(&rt.dest_addr, &server_key) {
+    match rt.keychain.id_server(&rt.dest_addr, &server_key) {
         Ok(()) => {
             tracing::info!(server = %rt.dest_addr, key = %server_key, "known");
-            None
         }
         Err(keychain::PinError::NotKnown) => {
             tracing::warn!(server = %rt.dest_addr, key = %server_key, "new server, pinning");
             rt.keychain.pin_server(rt.dest_addr.clone(), server_key)?;
             tracing::info!("tip: verify this key through a trusted channel!");
 
-            Some(format!(
+            mc.queue_message(format!(
                 "§6tatu: new server saved:\n§e{:#}
 §6tatu: this should match the key outside the game!",
                 server_key
-            ))
+            ))?;
         }
         Err(keychain::PinError::Mismatch) => {
-            send_disconnect(
-                mc_conn,
+            mc.send_disconnect(
                 "§cPossible server impersonation!
 §7This server's identity is different from before.
 
@@ -346,223 +326,13 @@ tatu-servers.pin",
         .send(Bytes::from(rmp_serde::to_vec(&auth_msg)?))
         .await?;
 
-    secure_pipe
-        .send(Bytes::from(serialize_packet(&handshake)?))
-        .await?;
+    secure_pipe.send(Bytes::from(mc.handshake_bytes()?)).await?;
 
     tracing::info!("connected");
 
-    let (mc_conn, secure_pipe) = await_play(mc_conn, secure_pipe).await?;
-    let (mc_read, mut mc_write) = mc_conn;
-
-    if let Some(message) = tofu_message
-        && let Err(e) = send_message(&mut mc_write, &message).await
-    {
-        tracing::warn!("Failed to show fingerprint: {e}");
-    }
-
-    let result = forward_messages((mc_read, mc_write), secure_pipe).await;
+    let bridge = mc.into_bridge();
+    let result = bridge.forward_with_noise_pipe(secure_pipe).await;
     tracing::info!(server = %rt.dest_addr, "disconnected");
 
-    result
-}
-
-async fn send_message(mc_write: &mut RawWriteConnection, message: &str) -> anyhow::Result<()> {
-    use azalea_chat::FormattedText;
-    use protocol::packets::game::{
-        ClientboundGamePacket::SystemChat, c_system_chat::ClientboundSystemChat,
-    };
-
-    let packet = SystemChat(ClientboundSystemChat {
-        content: FormattedText::from(message),
-        overlay: false,
-    });
-
-    mc_write.write(&serialize_packet(&packet)?).await?;
-    Ok(())
-}
-
-async fn send_disconnect(mc_conn: MCReadWriteConn, message: &str) -> anyhow::Result<()> {
-    use azalea_chat::FormattedText;
-    use protocol::packets::login::{
-        ClientboundLoginPacket::LoginDisconnect, c_login_disconnect::ClientboundLoginDisconnect,
-    };
-
-    let (_, mut mc_write) = mc_conn;
-    let packet = LoginDisconnect(ClientboundLoginDisconnect {
-        reason: FormattedText::from(message),
-    });
-
-    mc_write.write(&serialize_packet(&packet)?).await?;
-    Ok(())
-}
-
-async fn finish_login_handshake(
-    conn: Connection<ServerboundHandshakePacket, ClientboundHandshakePacket>,
-) -> anyhow::Result<(MCReadWriteConn, String)> {
-    use protocol::packets::login::ServerboundLoginPacket;
-
-    let mut conn = conn.login();
-
-    let hello = loop {
-        match conn.read().await {
-            Ok(ServerboundLoginPacket::Hello(h)) => break h,
-            Ok(_) => continue,
-            Err(e) if matches!(*e, ReadPacketError::ConnectionClosed) => {
-                anyhow::bail!("Connection closed during login")
-            }
-            Err(e) => return Err(e.into()),
-        }
-    };
-
-    let mut nick = hello.name.clone();
-    nick.truncate(MAX_NICK_LENGTH);
-
-    let mc_conn = conn.into_split_raw();
-    Ok((mc_conn, nick))
-}
-
-async fn handle_ping(
-    conn: Connection<ServerboundHandshakePacket, ClientboundHandshakePacket>,
-    server_addr: &str,
-) -> anyhow::Result<()> {
-    use protocol::packets::status::{
-        ClientboundStatusPacket::{PongResponse, StatusResponse},
-        ServerboundStatusPacket::{PingRequest, StatusRequest},
-        c_pong_response::ClientboundPongResponse,
-        c_status_response::{ClientboundStatusResponse, Players, Version},
-    };
-
-    let mut status_conn = conn.status();
-
-    if let Ok(StatusRequest(_)) = status_conn.read().await {
-        status_conn
-            .write(StatusResponse(ClientboundStatusResponse {
-                description: format!("§7{server_addr}\n§6A Tatu server").into(),
-                favicon: None,
-                players: Players {
-                    max: 0,
-                    online: 0,
-                    sample: vec![],
-                },
-                version: Version {
-                    name: "Tatu Proxy".to_string(),
-                    protocol: PROTOCOL_VERSION,
-                },
-                enforces_secure_chat: Some(false),
-            }))
-            .await?;
-    }
-
-    if let Ok(PingRequest(ping)) = status_conn.read().await {
-        status_conn
-            .write(PongResponse(ClientboundPongResponse { time: ping.time }))
-            .await?;
-    }
-
-    Ok(())
-}
-
-async fn await_play(
-    mc_conn: MCReadWriteConn,
-    proxy: NoisePipe<TcpStream>,
-) -> anyhow::Result<(MCReadWriteConn, NoisePipe<TcpStream>)> {
-    let (mut mc_read, mut mc_write) = mc_conn;
-    use protocol::{
-        packets::config::{ClientboundConfigPacket, ServerboundConfigPacket},
-        read::deserialize_packet,
-    };
-
-    enum State {
-        WaitingForServerConfig,
-        WaitingForClientConfig,
-        Ready,
-    }
-
-    let (mut proxy_sink, mut proxy_stream) = proxy.split();
-    let mut state = State::WaitingForServerConfig;
-
-    loop {
-        tokio::select! {
-            bytes = mc_read.read() => {
-                let bytes = bytes?;
-
-                if let State::WaitingForClientConfig = state {
-                    let mut cursor = std::io::Cursor::new(&bytes[..]);
-                    if let Ok(ServerboundConfigPacket::FinishConfiguration(_)) =
-                        deserialize_packet::<ServerboundConfigPacket>(&mut cursor)
-                    {
-                        state = State::Ready;
-                    }
-                }
-
-                proxy_sink.send(Bytes::from(bytes)).await?;
-                proxy_sink.flush().await?;
-            }
-
-            proxy_msg = proxy_stream.next() => {
-                let bytes = match proxy_msg {
-                    Some(Ok(bytes)) => bytes,
-                    Some(Err(e)) => return Err(e.into()),
-                    None => anyhow::bail!("Proxy connection closed before reaching game state"),
-                };
-
-                let mut cursor = std::io::Cursor::new(&bytes[..]);
-                state = match state {
-                    State::WaitingForServerConfig => {
-                        match deserialize_packet::<ClientboundConfigPacket>(&mut cursor) {
-                            Ok(ClientboundConfigPacket::FinishConfiguration(_)) => State::WaitingForClientConfig,
-                            _ => State::WaitingForServerConfig,
-                        }
-                    }
-                    State::Ready => {
-                        if deserialize_packet::<ClientboundGamePacket>(&mut cursor).is_ok() {
-                            mc_write.write(&bytes).await?;
-                            return Ok(((mc_read, mc_write), proxy_sink.reunite(proxy_stream)?));
-                        }
-                        State::Ready
-                    }
-                    s => s,
-                };
-
-                mc_write.write(&bytes).await?;
-            }
-        }
-    }
-}
-
-async fn forward_messages(
-    mc_conn: MCReadWriteConn,
-    proxy: NoisePipe<TcpStream>,
-) -> anyhow::Result<()> {
-    let (mut mc_read, mut mc_write) = mc_conn;
-    let (mut proxy_sink, mut proxy_stream) = proxy.split();
-
-    loop {
-        tokio::select! {
-            mc_msg = mc_read.read() => {
-                match mc_msg {
-                    Ok(bytes) => {
-                        proxy_sink.send(Bytes::from(bytes)).await?;
-                        proxy_sink.flush().await?;
-                    }
-                    Err(e) if matches!(*e, ReadPacketError::ConnectionClosed) => {
-                        break;
-                    }
-                    Err(e) => return Err(e.into()),
-                }
-            }
-            proxy_msg = proxy_stream.next() => {
-                match proxy_msg {
-                    Some(Ok(bytes)) => {
-                        mc_write.write(&bytes).await?;
-                    }
-                    Some(Err(e)) => return Err(e.into()),
-                    None => break,
-                }
-            }
-        }
-    }
-
-    Ok(())
+    result.map_err(Into::into)
 }

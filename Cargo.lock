@@ -2727,6 +2727,7 @@ dependencies = [
  "blake2",
  "chacha20poly1305",
  "curve25519-dalek",
+ "getrandom 0.3.4",
  "rustc_version",
  "subtle",
 ]
@@ -2845,8 +2846,6 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "argh",
- "azalea-chat",
- "azalea-protocol",
  "bytes",
  "dirs",
  "futures",
@@ -2865,6 +2864,8 @@ name = "tatu-common"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "azalea-chat",
+ "azalea-protocol",
  "base58",
  "blake2",
  "bytes",
@@ -2894,7 +2895,6 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "argh",
- "azalea-protocol",
  "bytes",
  "futures",
  "rmp-serde",
