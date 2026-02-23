@@ -20,7 +20,7 @@ const PATTERN: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
 fn length_codec() -> LengthDelimitedCodec {
     LengthDelimitedCodec::builder()
         .length_field_length(2)
-        .little_endian()
+        .big_endian()
         .max_frame_length(MAX_MSG)
         .new_codec()
 }
