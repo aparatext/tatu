@@ -1,11 +1,10 @@
 mod keychain;
 
 use argh::FromArgs;
-use bytes::Bytes;
-use futures::SinkExt;
 use shadow_rs::shadow;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 
 use keychain::Keychain;
@@ -14,6 +13,7 @@ use tatu_common::{
     minecraft::Handshake,
     model::AuthMessage,
     noise::NoisePipe,
+    framing::write_frame,
 };
 
 shadow!(build);
@@ -322,16 +322,13 @@ tatu-servers.pin",
         skin: rt.skin.as_deref().map(String::from),
     };
 
-    secure_pipe
-        .send(Bytes::from(rmp_serde::to_vec(&auth_msg)?))
-        .await?;
-
-    secure_pipe.send(Bytes::from(mc.handshake_bytes()?)).await?;
+    write_frame(&mut secure_pipe, &rmp_serde::to_vec(&auth_msg)?).await?;
+    write_frame(&mut secure_pipe, &mc.handshake_bytes()?).await?;
+    secure_pipe.flush().await?;
+    let bridge = mc.into_bridge();
 
     tracing::info!("connected");
-
-    let bridge = mc.into_bridge();
-    let result = bridge.forward_with_noise_pipe(secure_pipe).await;
+    let result = bridge.forward(secure_pipe).await;
     tracing::info!(server = %rt.dest_addr, "disconnected");
 
     result.map_err(Into::into)

@@ -26,7 +26,7 @@ digest.opt-level = 3
 subtle.opt-level = 3
 
 [workspace.dependencies]
-tokio = { version = "1.48" }
+tokio = { version = "1.48", features = ["io-util"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 futures = "0.3"
 bytes = "1.11"

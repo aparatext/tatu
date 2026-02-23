@@ -30,6 +30,7 @@ use azalea_protocol::{
     read::{ReadPacketError, deserialize_packet},
     write::serialize_packet,
 };
+use tokio::io::AsyncWriteExt;
 
 use crate::model::Persona;
 
@@ -264,20 +265,15 @@ impl Bridge {
     }
 }
 
-// ---- NoisePipe utilities (temporary) ----
+// ---- Session framing ----
 
-use crate::noise::NoisePipe;
-use futures::{SinkExt, StreamExt};
+use crate::framing::{read_frame, write_frame};
 
 impl Bridge {
-    pub async fn forward_with_noise_pipe<
-        T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
-    >(
+    pub async fn forward<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
         mut self,
-        pipe: NoisePipe<T>,
+        mut io: T,
     ) -> io::Result<()> {
-        let (mut sink, mut stream) = pipe.split();
-
         // Track config-play transition to know when to flush queued messages.
         // Server sends FinishConfig, client acks, then first game packet = Play.
         enum State {
@@ -298,14 +294,15 @@ impl Bridge {
                         state = State::Ready;
                     }
 
-                    sink.send(Bytes::from(bytes)).await.map_err(io::Error::other)?;
-                    sink.flush().await.map_err(io::Error::other)?;
+                    write_frame(&mut io, &bytes).await?;
+                    io.flush().await?;
                 }
 
-                msg = stream.next() => {
-                    let bytes = msg
-                        .ok_or_else(|| io::Error::other("pipe closed"))?
-                        .map_err(io::Error::other)?;
+                msg = read_frame(&mut io) => {
+                    let bytes = match msg? {
+                        Some(bytes) => bytes,
+                        None => return Err(io::Error::other("session closed")),
+                    };
 
                     state = match state {
                         State::WaitingServerConfig if Self::is_server_finish_config(&bytes) => {
@@ -330,18 +327,17 @@ impl Bridge {
                 result = self.read.read() => {
                     match result {
                         Ok(bytes) => {
-                            sink.send(Bytes::from(bytes)).await.map_err(io::Error::other)?;
-                            sink.flush().await.map_err(io::Error::other)?;
+                            write_frame(&mut io, &bytes).await?;
+                            io.flush().await?;
                         }
                         Err(e) if matches!(*e, ReadPacketError::ConnectionClosed) => break,
                         Err(e) => return Err(io::Error::other(e)),
                     }
                 }
 
-                msg = stream.next() => {
-                    match msg {
-                        Some(Ok(bytes)) => self.write.write(&bytes).await?,
-                        Some(Err(e)) => return Err(io::Error::other(e)),
+                msg = read_frame(&mut io) => {
+                    match msg? {
+                        Some(bytes) => self.write.write(&bytes).await?,
                         None => break,
                     }
                 }

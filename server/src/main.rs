@@ -8,6 +8,7 @@ use tatu_common::{
     minecraft::ServerSidePlayer,
     model::{AuthMessage, Persona},
     noise::NoisePipe,
+    framing::read_frame,
 };
 
 shadow!(build);
@@ -113,7 +114,7 @@ async fn handle_connection(
     let bridge = player.connect(backend, &handshake_bytes).await?;
 
     tracing::info!(name = %persona.handle, "joined");
-    let result = bridge.forward_with_noise_pipe(pipe).await;
+    let result = bridge.forward(pipe).await;
     tracing::info!(name = %persona.handle, "left");
 
     result.map_err(Into::into)
@@ -123,21 +124,17 @@ async fn auth_client(
     tatu_stream: TcpStream,
     keypair: &TatuKey,
 ) -> anyhow::Result<(NoisePipe<TcpStream>, Persona, bytes::Bytes)> {
-    use futures::StreamExt;
-
     let mut secure_stream = NoisePipe::accept(tatu_stream, &keypair.x_key()).await?;
     let client_key = secure_stream.remote_public_key()?;
 
-    let auth_bytes = secure_stream
-        .next()
-        .await
-        .ok_or_else(|| anyhow::anyhow!("Connection closed before auth"))??;
+    let auth_bytes = read_frame(&mut secure_stream)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Connection closed before auth"))?;
     let auth_msg: AuthMessage = rmp_serde::from_slice(&auth_bytes)?;
 
-    let handshake_bytes = secure_stream
-        .next()
-        .await
-        .ok_or_else(|| anyhow::anyhow!("Connection closed before handshake"))??;
+    let handshake_bytes = read_frame(&mut secure_stream)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Connection closed before handshake"))?;
 
     let persona = Persona::auth(client_key, auth_msg.handle_claim, auth_msg.skin)?;
     Ok((secure_stream, persona, handshake_bytes))

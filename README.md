@@ -39,16 +39,16 @@ When you connect with a nick (set by your launcher in offline mode) for the firs
 
 ## Roadmap
 
-### 0.3: The Network Update
+### 0.3: Network Update
 
-  - [x] Abstract Minecraft players
+  - [x] Abstract Minecraft connections
   - [ ] (0.3.0) Take Minecraft Protocol in-house
     - [ ] (0.3.1) Support legacy Minecraft versions (1.8, 1.12, 1.18, 1.19)
   - [ ] Preserve FML handshake
   - [ ] Server Ping forwarding
-  - [ ] Rewrite NoisePipe
+  - [x] Rewrite NoisePipe
   
-### 0.4: The Housekeeping Update
+### 0.4: Housekeeping Update
 
   - [ ] Rebrand tatu-common as tatu-lib
     - [ ] Remove anyhow from common
@@ -66,7 +66,7 @@ When you connect with a nick (set by your launcher in offline mode) for the firs
   - [ ] tracing integration in game chat
   - [ ] CONTRIBUTING.md
 
-### 1.0: The Foundational Update
+### 1.0: Stability
 
   - [ ] PROTOCOL.md
     - [ ] Versioning, magic
@@ -83,7 +83,7 @@ When you connect with a nick (set by your launcher in offline mode) for the firs
     - [ ] Fast Noise_KK handshake
       - [ ] 1-RTT session resumption?
   - [ ] Key succession?
-  - [ ] Transparent peer key broadcast; enables possible e2ee voice chat integration, chat signing (incompatible with Minecraft's RSA-based SecureChat)
+  - [ ] Transparent peer key broadcast; enables possible e2ee voice chat integration, chat signing (incompatible with Minecraft's RSA-based SecureChat), encryption
 
 
 ## Getting started
