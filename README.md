@@ -94,10 +94,6 @@ When you connect with a nick (set by your launcher in offline mode) for the firs
 cargo install --git https://github.com/aparatext/tatu tatu-server tatu-client
 ```
 
-> [!WARNING]
-> Debug builds use cryptographic parameters chosen for quicker testing at the expense of security.
-> They are unfit for and incompatible with production.
-
 ### Players
 
 1. Run: `tatu-client run my-awesome-server.net:25519 -s my.skin`

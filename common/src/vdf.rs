@@ -16,7 +16,10 @@ static N: Lazy<Integer> = Lazy::new(|| {
 static N_HALF: Lazy<Integer> = Lazy::new(|| N.clone() / 2);
 
 // Difficulty
-const T: u32 = 1 << (if !cfg!(debug_assertions) { 24 } else { 21 });
+#[cfg(test)]
+const T: u32 = 1 << 21;
+#[cfg(not(test))]
+const T: u32 = 1 << 24;
 static TWO_TO_T: Lazy<Integer> = Lazy::new(|| Integer::from(Integer::u_pow_u(2, T)));
 
 // Wesolowski, "Efficient Verifiable Delay Functions"
