@@ -136,6 +136,6 @@ async fn auth_client(
         .await?
         .ok_or_else(|| anyhow::anyhow!("Connection closed before handshake"))?;
 
-    let persona = Persona::auth(client_key, auth_msg.handle_claim, auth_msg.skin)?;
+    let persona = Persona::auth(client_key, auth_msg.handle_proof, auth_msg.skin)?;
     Ok((secure_stream, persona, handshake_bytes))
 }

@@ -14,7 +14,7 @@ pub struct Persona {
 impl Persona {
     pub fn auth(
         key: x25519::PublicKey,
-        claim: HandleClaim,
+        claim: HandleProof,
         skin: Option<String>,
     ) -> anyhow::Result<Self> {
         let handle = claim.verify(&key)?;
@@ -73,14 +73,14 @@ impl Handle {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-pub struct HandleClaim {
+pub struct HandleProof {
     pub nick: String,
     pub nick_sig: ed25519::Signature,
     pub sig_key: ed25519::VerifyingKey,
     pub vdf_proof: vdf::Proof,
 }
 
-impl HandleClaim {
+impl HandleProof {
     pub fn mine(nick: String, sig_key: &ed25519::SigningKey) -> anyhow::Result<Self> {
         use ed25519::Signer;
 
@@ -90,7 +90,7 @@ impl HandleClaim {
 
         let nick_sig = sig_key.sign(nick.as_bytes());
 
-        Ok(HandleClaim {
+        Ok(HandleProof {
             nick,
             nick_sig,
             sig_key: sig_key.verifying_key(),
@@ -126,6 +126,6 @@ impl HandleClaim {
 
 #[derive(Serialize, Deserialize)]
 pub struct AuthMessage {
-    pub handle_claim: HandleClaim,
+    pub handle_proof: HandleProof,
     pub skin: Option<String>,
 }

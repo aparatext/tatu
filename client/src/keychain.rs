@@ -4,7 +4,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use tatu_common::keys::{RemoteTatuKey, TatuKey};
-use tatu_common::model::HandleClaim;
+use tatu_common::model::HandleProof;
 use thiserror::Error;
 use tokio::sync::{Mutex, OnceCell};
 
@@ -105,7 +105,7 @@ impl Keychain {
         fs::write(&self.servers_path, content)
     }
 
-    pub fn load_handle(&self, nick: &str) -> Result<HandleClaim, LoadHandleError> {
+    pub fn load_handle(&self, nick: &str) -> Result<HandleProof, LoadHandleError> {
         let uuid_dir = self.handles_dir.join(self.identity.uuid().to_string());
         let file_path = uuid_dir.join(format!("{}.nick", nick));
 
@@ -114,7 +114,7 @@ impl Keychain {
         }
 
         let data = fs::read(&file_path)?;
-        let claim = match rmp_serde::from_slice::<HandleClaim>(&data) {
+        let claim = match rmp_serde::from_slice::<HandleProof>(&data) {
             Ok(claim) => claim,
             Err(e) => {
                 tracing::warn!(nick = %nick, error = %e, "corrupt handle claim, remining");
@@ -136,7 +136,7 @@ impl Keychain {
     pub async fn ensure_handle(
         self: &Arc<Self>,
         nick: &str,
-    ) -> Result<HandleClaim, LoadHandleError> {
+    ) -> Result<HandleProof, LoadHandleError> {
         match self.load_handle(nick) {
             Ok(claim) => return Ok(claim),
             Err(LoadHandleError::Io(e)) => return Err(LoadHandleError::Io(e)),
@@ -171,10 +171,10 @@ impl Keychain {
         Err(LoadHandleError::NeedsMining)
     }
 
-    pub fn mine_handle(&self, nick: &str) -> io::Result<HandleClaim> {
+    pub fn mine_handle(&self, nick: &str) -> io::Result<HandleProof> {
         tracing::info!(nick = %nick, "mining handle");
 
-        let claim = HandleClaim::mine(nick.to_string(), &self.identity.ed_key())
+        let claim = HandleProof::mine(nick.to_string(), &self.identity.ed_key())
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
 
         let data =

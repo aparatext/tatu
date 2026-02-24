@@ -262,7 +262,7 @@ This will only be shown once.
         return Ok(());
     }
 
-    let handle_claim = match rt.keychain.ensure_handle(&nick).await {
+    let handle_proof = match rt.keychain.ensure_handle(&nick).await {
         Ok(claim) => claim,
         Err(keychain::LoadHandleError::NeedsMining) => {
             mc.send_disconnect(
@@ -318,7 +318,7 @@ tatu-servers.pin",
     };
 
     let auth_msg = AuthMessage {
-        handle_claim,
+        handle_proof,
         skin: rt.skin.as_deref().map(String::from),
     };
 
