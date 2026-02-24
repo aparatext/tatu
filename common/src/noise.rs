@@ -2,7 +2,6 @@ use bytes::{Bytes, BytesMut};
 use futures::{Sink, SinkExt, Stream, StreamExt, ready};
 use snow::{HandshakeState, TransportState};
 use std::{
-    collections::VecDeque,
     io,
     pin::Pin,
     task::{Context, Poll},
@@ -13,7 +12,6 @@ use tokio_util::codec::{Decoder, Encoder, Framed, FramedParts, LengthDelimitedCo
 const MAX_MSG: usize = 65535;
 const TAG_LEN: usize = 16;
 const MAX_PLAIN: usize = MAX_MSG - TAG_LEN;
-const FLUSH_THRESHOLD: usize = 1400;
 const PATTERN: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
 
 fn length_codec() -> LengthDelimitedCodec {
@@ -41,10 +39,6 @@ impl NoiseCodec {
 
     pub fn transport(&self) -> &TransportState {
         &self.transport
-    }
-
-    pub fn transport_mut(&mut self) -> &mut TransportState {
-        &mut self.transport
     }
 }
 
@@ -87,8 +81,7 @@ impl Encoder<Bytes> for NoiseCodec {
 pub struct NoisePipe<T> {
     inner: Framed<T, NoiseCodec>,
     read_buf: BytesMut,
-    write_buf: BytesMut,
-    write_queue: VecDeque<Bytes>,
+    write_pending: Option<Bytes>,
 }
 
 impl<T: AsyncRead + AsyncWrite + Unpin> NoisePipe<T> {
@@ -142,8 +135,7 @@ async fn handshake<T: AsyncRead + AsyncWrite + Unpin>(
     Ok(NoisePipe {
         inner: Framed::from_parts(new_parts),
         read_buf: BytesMut::new(),
-        write_buf: BytesMut::new(),
-        write_queue: VecDeque::new(),
+        write_pending: None,
     })
 }
 
@@ -152,31 +144,15 @@ impl<T> NoisePipe<T> {
         self.inner.codec().transport()
     }
 
-    pub fn transport_mut(&mut self) -> &mut TransportState {
-        self.inner.codec_mut().transport_mut()
-    }
-
     pub fn remote_public_key(&self) -> io::Result<x25519::PublicKey> {
         let raw = self
             .transport()
             .get_remote_static()
-            .ok_or_else(|| io_err("no remote static key"))?;
+            .ok_or_else(|| io_err("no static remote key"))?;
         let bytes: [u8; 32] = raw
             .try_into()
             .map_err(|_| io_err("remote key must be 32 bytes"))?;
         Ok(x25519::PublicKey::from(bytes))
-    }
-
-    pub fn into_inner(self) -> T {
-        self.inner.into_inner()
-    }
-
-    pub fn get_ref(&self) -> &T {
-        self.inner.get_ref()
-    }
-
-    pub fn get_mut(&mut self) -> &mut T {
-        self.inner.get_mut()
     }
 }
 
@@ -215,33 +191,28 @@ impl<T: AsyncWrite + Unpin> AsyncWrite for NoisePipe<T> {
     ) -> Poll<io::Result<usize>> {
         let this = self.get_mut();
 
-        if !buf.is_empty() {
-            this.write_buf.extend_from_slice(buf);
+        match this.poll_drain_pending(cx)? {
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(()) => {}
         }
 
-        while this.write_buf.len() >= MAX_PLAIN {
-            let chunk = this.write_buf.split_to(MAX_PLAIN).freeze();
-            this.write_queue.push_back(chunk);
+        if buf.is_empty() {
+            return Poll::Ready(Ok(0));
         }
 
-        if this.write_buf.len() >= FLUSH_THRESHOLD {
-            let chunk = this.write_buf.split().freeze();
-            this.write_queue.push_back(chunk);
-        }
-
-        ready!(this.poll_drain_queue(cx))?;
-        Poll::Ready(Ok(buf.len()))
+        let plain_len = buf.len().min(MAX_PLAIN);
+        this.write_pending = Some(Bytes::copy_from_slice(&buf[..plain_len]));
+        let _ = this.poll_drain_pending(cx)?;
+        Poll::Ready(Ok(plain_len))
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         let this = self.get_mut();
 
-        if !this.write_buf.is_empty() {
-            let chunk = this.write_buf.split().freeze();
-            this.write_queue.push_back(chunk);
+        match this.poll_drain_pending(cx)? {
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(()) => {}
         }
-
-        ready!(this.poll_drain_queue(cx))?;
         Pin::new(&mut this.inner).poll_flush(cx)
     }
 
@@ -256,12 +227,74 @@ fn io_err(e: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> io::Error {
 }
 
 impl<T: AsyncWrite + Unpin> NoisePipe<T> {
-    fn poll_drain_queue(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        while self.write_queue.front().is_some() {
-            ready!(Pin::new(&mut self.inner).poll_ready(cx))?;
-            let frame = self.write_queue.pop_front().unwrap();
-            Pin::new(&mut self.inner).start_send(frame)?;
+    fn poll_drain_pending(&mut self, cx: &mut Context<'_>) -> io::Result<Poll<()>> {
+        let Some(frame) = self.write_pending.take() else {
+            return Ok(Poll::Ready(()));
+        };
+
+        match Pin::new(&mut self.inner).poll_ready(cx) {
+            Poll::Pending => {
+                self.write_pending = Some(frame);
+                Ok(Poll::Pending)
+            }
+            Poll::Ready(Ok(())) => {
+                Pin::new(&mut self.inner).start_send(frame)?;
+                Ok(Poll::Ready(()))
+            }
+            Poll::Ready(Err(e)) => {
+                self.write_pending = Some(frame);
+                Err(e)
+            }
         }
-        Poll::Ready(Ok(()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::join;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex};
+
+    #[test]
+    fn stream_roundtrip_under_backpressure() {
+        futures::executor::block_on(async {
+            let init_sk = x25519::StaticSecret::random_from_rng(rand::rngs::OsRng);
+            let resp_sk = x25519::StaticSecret::random_from_rng(rand::rngs::OsRng);
+
+            // Small duplex capacity forces frequent Pending transitions.
+            let (left, right) = duplex(64);
+            let (left, right) = join!(
+                NoisePipe::connect(left, &init_sk),
+                NoisePipe::accept(right, &resp_sk)
+            );
+            let mut left = left.expect("initiator handshake");
+            let mut right = right.expect("responder handshake");
+
+            let mut payload = Vec::with_capacity((MAX_PLAIN * 3) + 513);
+            for i in 0..(MAX_PLAIN * 3 + 513) {
+                payload.push((i % 251) as u8);
+            }
+
+            let writer = async {
+                // Mixed sizes exercise chunk boundaries and buffered pending writes.
+                left.write_all(&payload[..17]).await?;
+                left.write_all(&payload[17..MAX_PLAIN + 29]).await?;
+                left.write_all(&payload[MAX_PLAIN + 29..]).await?;
+                left.flush().await
+            };
+
+            let reader = async {
+                let mut got = vec![0u8; payload.len()];
+                right.read_exact(&mut got).await?;
+                if got != payload {
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, "payload mismatch"));
+                }
+                Ok::<_, io::Error>(())
+            };
+
+            let (w, r) = join!(writer, reader);
+            w.expect("writer completed");
+            r.expect("reader completed");
+        });
     }
 }
