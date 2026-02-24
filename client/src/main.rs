@@ -8,7 +8,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 
 use keychain::Keychain;
-use tatu_common::{
+use tatu_lib::{
     keys::{RecoveryPhrase, RemoteTatuKey, TatuKey},
     minecraft::Handshake,
     model::AuthMessage,

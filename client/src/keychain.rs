@@ -3,8 +3,8 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
-use tatu_common::keys::{RemoteTatuKey, TatuKey};
-use tatu_common::model::HandleProof;
+use tatu_lib::keys::{RemoteTatuKey, TatuKey};
+use tatu_lib::model::HandleProof;
 use thiserror::Error;
 use tokio::sync::{Mutex, OnceCell};
 

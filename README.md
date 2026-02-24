@@ -50,15 +50,15 @@ When you connect with a nick (set by your launcher in offline mode) for the firs
   
 ### 0.4: Housekeeping Update
 
-  - [ ] Rebrand tatu-common as tatu-lib
-    - [ ] Remove anyhow from common
+  - [x] Rebrand tatu-common as tatu-lib
+    - [ ] Remove anyhow in lib
     - [ ] Remove all `unwrap()`
     - [ ] Factor out minecraft protocol
   - [ ] Profile throughput/binary size
     - [x] Remove clap
     - [ ] Remoze azalea
   - [ ] `tatu-keys` command
-    - [ ] `tatu-keys recover -k [id.key]`
+    - [ ] `tatu-keys recover [-k id.key]`
     - [ ] `cat id.key | tatu-keys pub [--uuid]`
     - [ ] `tatu-keys mine wizard [-k id.key]`
     - [ ] `tatu-keys gen id.key`

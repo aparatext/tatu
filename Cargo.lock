@@ -2852,7 +2852,7 @@ dependencies = [
  "rmp-serde",
  "rpassword",
  "shadow-rs",
- "tatu-common",
+ "tatu-lib",
  "thiserror 2.0.17",
  "tokio",
  "tracing",
@@ -2860,7 +2860,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tatu-common"
+name = "tatu-lib"
 version = "0.2.0"
 dependencies = [
  "anyhow",
@@ -2899,7 +2899,7 @@ dependencies = [
  "futures",
  "rmp-serde",
  "shadow-rs",
- "tatu-common",
+ "tatu-lib",
  "tokio",
  "tracing",
  "tracing-subscriber",

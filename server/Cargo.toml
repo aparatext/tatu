@@ -6,7 +6,7 @@ build = "build.rs"
 
 [dependencies]
 shadow-rs = { version = "1.5", default-features = false }
-tatu-common = { path = "../common" }
+tatu-lib = { path = "../lib" }
 
 tokio.workspace = true
 futures.workspace = true

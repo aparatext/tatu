@@ -3,7 +3,7 @@ use shadow_rs::shadow;
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 use tokio::net::{TcpListener, TcpStream};
 
-use tatu_common::{
+use tatu_lib::{
     keys::TatuKey,
     minecraft::ServerSidePlayer,
     model::{AuthMessage, Persona},
